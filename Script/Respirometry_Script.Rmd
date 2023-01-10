@@ -1,0 +1,642 @@
+---
+title: "Respirometry Script"
+author: "Robert Dellinger"
+date: "10/7/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+## Original script created by Dr. Nyssa Silbiger modified by Robert Dellinger
+
+# Load Libraries
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+
+#install.packages("devtools")
+library("devtools")
+# Install LoLinR package from GitHub
+#install_github('colin-olito/LoLinR')
+#install_github("padpadpadpad/rTPC")
+library("LoLinR")
+library("rTPC")
+
+# Create a character vector of package names
+pkgs <- c("segmented", "plotrix", "gridExtra", "lubridate", "chron", "patchwork", "tidyverse", "here", "PNWColors", "stringr", "boot", "car", "nls.multstart", "broom", "minpack.lm", "viridis", "dplyr")
+
+# Install and load packages if they are not already installed
+lapply(pkgs, function(x) {
+  if (!require(x, character.only = TRUE)) {
+    install.packages(x)
+    library(x, character.only = TRUE)
+  }
+})
+
+```
+
+# Importing Data 
+
+```{r, message=FALSE}
+
+#Set the path to the location of the raw oxygen data files
+path.p<-here("Data","Respirometry_Data") 
+
+# importing all individual CSV files
+file.names<-basename(list.files(path = path.p, pattern = "csv$", recursive = TRUE))
+
+#renaming the file names as file.names.full
+file.names.full<-list.files(path = path.p, pattern = "csv$", recursive = TRUE) 
+
+#creating a dataframe to extract Snail_ID/Treatment from file names
+str <- strsplit(file.names, "[_]")
+Snail_ID_filename <- as.data.frame(matrix(unlist(str), ncol=5, byrow=TRUE))
+colnames(Snail_ID_filename) <- c("Name","Temp_Treatment", "Channel", "Snail_ID", "O2") 
+
+#merging file names and separated strings
+Snail_ID_filename <- Snail_ID_filename %>% 
+  mutate(File_ID=file.names)
+
+# Load meta data for respiration run times, organism ID and treatments,  and organism ash free dry weight
+
+RespoMeta <- read_csv(here("Data", "Snail_Metadata", "Respirometry_Metadata.csv")) 
+TreatmentMeta <- read_csv(here("Data", "Snail_Metadata","Treatment_Organism_ID_Information.csv"))
+Organism_AFDW <- read_csv(here("Data", "Snail_Metadata", "Organism_AFDW.csv"))
+Organism_Morphometrics <- read_csv(here("Data", "Snail_Metadata", "Organism_Morphometric_Data.csv"))
+
+# join the data together
+Respo.Treatment <- left_join(TreatmentMeta, RespoMeta)
+Respo.Treatment.Channels <- left_join(Respo.Treatment, Snail_ID_filename)
+Respo.Treatment.Weights <- left_join(Respo.Treatment.Channels, Organism_AFDW)
+Respo.Treatment.Metadata <- left_join(Respo.Treatment.Weights, Organism_Morphometrics)
+
+```
+
+
+#Data Wrangling 
+
+```{r}
+
+# converting dates to a date format and combining 
+Experiment.Info <- Respo.Treatment.Metadata %>% 
+  mutate(Date=mdy(Date)) %>% 
+  unite(Date, Start_Time, col="Start_Time", remove=F, sep=" ") %>% #uniting start date and time
+  unite(Date, Stop_Time, col="Stop_Time", remove=F, sep=" ") %>%  #uniting stop date and time
+  mutate(Start_Time = ymd_hms(Start_Time), #mutating to date format 
+         Stop_Time = ymd_hms(Stop_Time), #mutating to date format 
+         pH_Treatment = as.factor(pH_Treatment), #pH as a factor (8.0 or 7.7)
+         Temp_Treatment = as.numeric(str_extract_all(Temp_Treatment, "[1-2][0-9]")), #extracting temp
+         Mass_g = Final_Blotted_Wet_Mass_g %>% replace(is.na(.), 0), #replace NA weights with 0
+         Ash_Free_Dry_Weight = Ash_Free_Dry_Weight %>% replace(is.na(.), 0), #replace NA AFDW with 0
+         Organism_Volume_mL = Organism_Volume_mL %>% replace(is.na(.), 0)) %>% #replace NA volumes with 0
+  dplyr::select(Snail_ID, Temp_Treatment, pH_Treatment, Ash_Free_Dry_Weight, Mass_g,
+         Start_Time, Stop_Time, Channel, File_ID, Organism_Volume_mL) %>% #selecting for wanted columns
+  drop_na(File_ID) #drop nas
+
+Experiment.Info %>% as_tibble()
+```
+
+# Forlooping in Respirometry Data 
+
+## Original script created by Dr. Nyssa Silbiger modified by Robert Dellinger
+
+```{r, message=FALSE, echo = FALSE}
+
+#saving file names
+filenames_final <- Experiment.Info$File_ID
+
+#creating data frame to import respiration data into 
+RespoR <- data.frame(matrix(NA, nrow=length(filenames_final), ncol=4)) 
+colnames(RespoR) <- c("File_ID","Intercept", "umol.L.sec","Temp.C") #setting column names
+
+###forloop##### 
+for(i in 1:length(filenames_final)) {
+  
+  #reading in each file of raw data 
+  Respo.Data <- read_csv(file.path(path.p, paste0(filenames_final[i])), skip = 1) %>%
+    mutate(File_ID=file.path(path.p, filenames_final[i])) %>% #adding file names
+    dplyr::select(File_ID, Date, Time, Value, Temp) %>% #selecting for variables
+    unite(Date, Time, col="Time", remove=T, sep = " ") %>% #creating datetime
+    mutate(Time = mdy_hms(Time)) %>% # covert time
+    drop_na() #omiting NAs
+    
+  #subsetting file names  
+  subset.filenames<- sub(".*/", "", Experiment.Info$File_ID[i])
+  Respo.Data$File_ID <- subset.filenames  
+
+  # Getting the file name without the .csv
+  rename<- sub(".csv","", filenames_final[i])
+  
+  # matching file row to file name 
+  Frow<-which(subset.filenames == Experiment.Info$File_ID) 
+  
+  #start and stop time for each file name
+  start<- ymd_hms(Experiment.Info$Start_Time[Frow])
+  stop <-ymd_hms(Experiment.Info$Stop_Time[Frow])
+  
+  #trimming time from data 
+  Respo.Data <-  Respo.Data %>%
+    filter(Time >= start & Time <= stop) %>% # filter to start and stop time
+    slice(500:n()) %>% # drop first 120 secs
+    mutate(sec = 1:n())  # create a new column for every second for the regression
+    
+  Respo.Data.orig<-Respo.Data # saving original data prior to thinning
+  
+  #Creating a new table prior to prepare to thin data
+  Respirometry.Tibble<-tibble(Time=as.numeric(), Value=as.numeric(),
+                              Temp=as.numeric(), sec=as.numeric())
+    
+#thinning data by every 20 seconds and placing into table 
+for(j in 1:nrow(Respo.Data)) { # alternative thinning strategy
+    if(j%%20==0){
+      Respirometry.Tibble<-rbind(Respirometry.Tibble, Respo.Data[j,])
+    }
+}
+
+# plotting full data     
+full.plot<- ggplot(Respo.Data.orig, aes(x = sec, y = Value)) +
+    geom_point(color = "dodgerblue") +
+    labs(
+      x = 'Time (seconds)',
+      y = expression(paste(' O'[2],' (',mu,'mol/L)')),
+      title = "original")
+  
+# plotting thinned data 
+thinned.plot <- ggplot(Respirometry.Tibble, aes(x = sec, y = Value))+
+    geom_point(color = "dodgerblue")+
+    labs(
+      x = 'Time (seconds)',
+      y = expression(paste(' O'[2],' (',mu,'mol/L)')),
+      title = "thinned")
+ 
+#bootstrapping technique (Olito et al. 2017)
+Regs <- rankLocReg(xall=Respirometry.Tibble$sec, yall=Respirometry.Tibble$Value, alpha=0.5, method="pc", verbose=TRUE)  
+
+#creates pdf of each individual respiration plot and statistics for each plot
+pdf(paste0(here("Output","Respo_Output","Thinning_Plots"),"/", rename,"thinning.pdf"))
+  
+plot(Regs) # plot the results of the regs bootstrapping technique
+plot(full.plot+thinned.plot) # use patchwork to bring the raw and thinned data together
+dev.off()
+  
+# fill in all the O2 consumption and rate data
+RespoR[i,2:3] <- Regs$allRegs[1,c(4,5)] #inserts slope and intercept in the dataframe
+RespoR[i,1] <- paste0(rename,".csv") #stores the file name
+RespoR[i,4] <- mean(Respirometry.Tibble$Temp, na.rm=T) #stores mean temperature organisms experienced
+  
+}
+
+#writing out data as a CSV
+write_csv(RespoR, here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv")) #saves to location
+
+```
+
+# Data Wrangling 
+
+```{r, message=FALSE}
+
+######## Reading and Merging Data #######
+Respirometry.Data.Summarized <- read_csv(here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv")) 
+
+#Empty chamber volume (650 mL)
+Chamber_Volume <- 650
+
+#Joining respiration data with the metadata and standardizing respiration rates
+Full.Dataset <-Respirometry.Data.Summarized %>% 
+left_join(Experiment.Info) %>%  #joining data              
+mutate(Volume_mL=Chamber_Volume-Organism_Volume_mL, #calculating chamber water volume by subtracting organism volume
+       umol.sec = (umol.L.sec/1000)*Volume_mL, #converting from L to mL and standardizing to water volume
+       Type = as.factor(case_when(Volume_mL == 650 ~ "Blank", #Setting Control and Blank factor
+                        Volume_mL < 650 ~ "Organism")))  #Full volume(650mL) = Blank
+  
+
+######## Calculating/Normalizing Respiration Rates #######
+Normalized.Dataset <- Full.Dataset %>%
+  group_by(Temp_Treatment, pH_Treatment, Type) %>% #grouping by treatments
+  summarise(umol.sec = mean(umol.sec, na.rm=TRUE)) %>% #means for blanks and organisms 
+  filter(Type=="Blank") %>% #filtering for blanks
+  dplyr::select(blank.rate = umol.sec) %>% #selecting for only blank rates
+  right_join(Full.Dataset) %>% 
+  # converting from umol/sec to umol/hour and normalizing to ash free dry weight (grams)
+  mutate(umol.sec.uncorrected = umol.sec,
+         umol.sec.corrected = umol.sec - blank.rate, # subtract the blank rates from the raw rates
+         umol.gram.hr.uncorrected = umol.sec.uncorrected*3600/Ash_Free_Dry_Weight,
+         umol.gram.hr.corrected = umol.sec.corrected*3600/Ash_Free_Dry_Weight) %>% 
+  ungroup() %>% 
+  filter(Type=="Organism") %>% 
+  dplyr::select(Snail_ID, Temp_Treatment, pH_Treatment,
+         Mass_g, umol.gram.hr.corrected, umol.gram.hr.uncorrected,
+         Channel, Temp.C, Volume_mL)
+
+#correcting for negative respiration rates and for values that fall below 0
+Respiration.Rates.Dataset <- Normalized.Dataset %>% 
+    mutate(umol.gram.hr.corrected = -(umol.gram.hr.corrected), 
+         umol.gram.hr.uncorrected = -(umol.gram.hr.uncorrected)) %>%
+    mutate(umol.gram.hr.corrected = ifelse(umol.gram.hr.corrected < 0, 0, umol.gram.hr.corrected), 
+         umol.gram.hr.uncorrected = ifelse(umol.gram.hr.uncorrected < 0, 0, umol.gram.hr.uncorrected))
+
+ Respiration.Rates.Dataset %>% as.tibble()
+ 
+write_csv(Respiration.Rates.Dataset, here("Data", "Thinned_Respirometry_Data", "Respiration.Rates.Dataset.csv")) 
+ 
+```
+
+#Outlier Removal and Statistics
+
+```{r}
+
+Respo.Rates <- read_csv(here("Data", "Thinned_Respirometry_Data", "Respiration.Rates.Dataset.csv"))
+
+Respo.Rates <- Respo.Rates %>% #filtering out mortalities and bad thinning plots
+  filter(Snail_ID != 72 & Snail_ID != 67 & Snail_ID != 32 & Snail_ID !=65 & Snail_ID !=70 & Snail_ID !=69 & Snail_ID !=26 & Snail_ID != 37)
+  
+# 32 (mass), 23 (bad line) 28 (mass to large), 65 (bad line and introduced a few days into the experiment after a previous mortality), 67 (mass to large), 72 (mortality) 69 (bad fit), 37 (irresponsive)
+
+# potentially  Snail_ID != 34 because of the grey line in the thinned data plot 
+
+#creating a function for standard error 
+se <- function(x) (sd(x) / sqrt(length(x)))
+
+Respo.Rates.Stats <- Respo.Rates %>% 
+  dplyr::select(Snail_ID, Temp_Treatment, pH_Treatment, 
+         umol.gram.hr.corrected, umol.gram.hr.uncorrected, Temp.C) %>%
+  mutate(pH_Treatment = as.factor(pH_Treatment)) %>% 
+  group_by(Temp_Treatment, pH_Treatment) %>% 
+  summarize(mean.umol.gram.hr.corrected =mean(umol.gram.hr.corrected),
+            var.umol.gram.hr.corrected = var(umol.gram.hr.corrected),
+            sd.umol.gram.hr.corrected = sd(umol.gram.hr.corrected),
+            se.umol.gram.hr.corrected =se(umol.gram.hr.corrected),
+            mean.umol.gram.hr.uncorrected = mean(umol.gram.hr.uncorrected),
+            var.umol.gram.hr.uncorrected = var(umol.gram.hr.uncorrected),
+            sd.umol.gram.hr.uncorrected = sd(umol.gram.hr.uncorrected),
+            se.umol.gram.hr.uncorrected =se(umol.gram.hr.uncorrected),
+            mean.Temp.C = mean(Temp.C),
+            var.Temp.C = var(Temp.C),
+            sd.Temp.C = sd(Temp.C),
+            se.Temp.C = se(Temp.C))
+            
+```
+
+
+#Thermal Performance Curves Bootstrapping using the Sharpe Schoolfield Model
+
+```{r}
+
+#load in the data set and select for temperature, rate, and pH treatment
+Respo.Rates.tpc <- Respo.Rates %>% 
+  mutate(rate=umol.gram.hr.corrected, temp=Temp.C) %>% 
+  dplyr::select(pH_Treatment, temp, rate)
+
+
+########### Low pH Sharpe-Schoolfield Model ################
+
+# load in data and filter to keep just a single curve (lowpH)
+low.pH <- filter(Respo.Rates.tpc, pH_Treatment == '7.7') 
+
+# fit Sharpe-Schoolfield model
+low_pH_fit <- nest(low.pH, data = c(temp, rate)) %>%
+  mutate(sharpeschoolhigh = map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                        data = .x,
+                        iter = c(3,3,3,3),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         # create new temperature data
+         low_pH_new_data = map(data, ~tibble(temp = seq(min(.x$temp), max(.x$temp), length.out = 100))),
+         # predict over that data,
+         low_pH_preds =  map2(sharpeschoolhigh, low_pH_new_data, ~augment(.x, newdata = .y)))
+
+# unnest predictions
+low_pH_preds <- dplyr::select(low_pH_fit, low_pH_preds) %>%
+  unnest(low_pH_preds)
+
+# plot data and predictions
+low.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), low_pH_preds, col = 'orange') +
+  geom_point(aes(temp, rate), low.pH, size = 2, alpha = 0.5) +
+  theme_bw(base_size = 9) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Respiration Rate',
+       title = 'Respiration Rate of Tegula Across\nA Range of Temperatures at Low pH')
+
+########### High pH Sharpe-Schoolfield Model ################
+
+# load in data and filter to keep just a single curve (lowpH)
+high.pH <- filter(Respo.Rates.tpc, pH_Treatment == '8') 
+
+# fit Sharpe-Schoolfield model
+high_pH_fit <- nest(high.pH, data = c(temp, rate)) %>%
+  mutate(sharpeschoolhigh = map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                        data = .x,
+                        iter = c(3,3,3,3),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         # create new temperature data
+         high_pH_new_data = map(data, ~tibble(temp = seq(min(.x$temp), max(.x$temp), length.out = 100))),
+         # predict over that data,
+         high_pH_preds =  map2(sharpeschoolhigh, high_pH_new_data, ~augment(.x, newdata = .y)))
+
+# unnest predictions
+high_pH_preds <- dplyr::select(high_pH_fit, high_pH_preds) %>%
+  unnest(high_pH_preds)
+
+# plot data and predictions
+high.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), high_pH_preds, col = 'cyan3') +
+  geom_point(aes(temp, rate), high.pH, size = 2, alpha = 0.5) +
+  theme_bw(base_size = 9) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Respiration Rate',
+       title = 'Respiration Rate of Tegula Across\nA Range of Temperatures at High pH')
+
+#Printing Both Plots
+
+grid.arrange(high.pH.plot, low.pH.plot, ncol=2)
+
+ 
+```
+
+
+
+#Bootstrapping Figure
+
+```{r, warning=FALSE, message=FALSE}
+
+
+### low pH portion ####
+
+# refit model using nlsLM
+low_fit_nlsLM <- minpack.lm::nlsLM(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                        data = low.pH,
+                        start = coef(low_pH_fit$sharpeschoolhigh[[1]]),
+                        lower = get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                        weights = rep(1, times = nrow(low.pH)))
+
+# bootstrap using case resampling
+boot.low.pH <- Boot(low_fit_nlsLM, method = 'case')
+
+# look at the data
+head(boot.low.pH$t)
+
+# create predictions of each bootstrapped model
+boot_low_preds <- boot.low.pH$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = 1:n()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(low.pH$temp), max(low.pH$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = sharpeschoolhigh_1981(temp, r_tref, e, eh, th, tref = 15))
+
+# calculate bootstrapped confidence intervals
+boot_low_conf_preds <- group_by(boot_low_preds, temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975)) %>%
+  ungroup()
+
+# plot bootstrapped CIs
+boot.low.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), low_pH_preds, col = 'blue') +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper), boot_low_conf_preds, fill = 'blue', alpha = 0.3) +
+  geom_point(aes(temp, rate), low.pH, size = 2, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Respiration rate',
+       title = 'Respiration rate across temperatures')
+
+# plot bootstrapped predictions
+boot.low.pH.plot.predictions <- ggplot() +
+  geom_line(aes(temp, .fitted), low_pH_preds, col = 'blue') +
+  geom_line(aes(temp, pred, group = iter), boot_low_preds, col = 'blue', alpha = 0.007) +
+  geom_point(aes(temp, rate), low.pH, size = 2, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Respiration rate',
+       title = 'Respiration rate - low pH')
+
+boot.low.pH.plot + boot.low.pH.plot.predictions
+
+low_extra_params <- calc_params(low_fit_nlsLM) %>%
+  pivot_longer(everything(), names_to =  'param', values_to = 'estimate')
+
+low_ci_extra_params <- Boot(low_fit_nlsLM, f = function(x){unlist(calc_params(x))}, labels = names(calc_params(low_fit_nlsLM)), R = 999, method = 'case') %>%
+  confint(., method = 'bca') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'case bootstrap')
+  
+low_pH_ci_extra_params <- left_join(low_ci_extra_params, low_extra_params)
+#> Joining, by = "param"
+
+
+
+### high pH portion ####
+
+# refit model using nlsLM
+high_fit_nlsLM <- minpack.lm::nlsLM(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                        data = high.pH,
+                        start = coef(high_pH_fit$sharpeschoolhigh[[1]]),
+                        lower = get_lower_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                        weights = rep(1, times = nrow(high.pH)))
+
+# bootstrap using case resampling
+boot.high.pH <- Boot(high_fit_nlsLM, method = 'case')
+
+# look at the data
+head(boot.high.pH$t)
+
+# create predictions of each bootstrapped model
+boot_high_preds <- boot.high.pH$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = 1:n()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(high.pH$temp), max(high.pH$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = sharpeschoolhigh_1981(temp, r_tref, e, eh, th, tref = 15))
+
+# calculate bootstrapped confidence intervals
+boot_high_conf_preds <- group_by(boot_high_preds, temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975)) %>%
+  ungroup()
+
+# plot bootstrapped CIs
+boot.high.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), high_pH_preds, col = 'blue') +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper), boot_high_conf_preds, fill = 'blue', alpha = 0.3) +
+  geom_point(aes(temp, rate), high.pH, size = 2, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Growth rate',
+       title = 'Respiration rate - High pH')
+
+# plot bootstrapped predictions
+boot.high.pH.plot.predictions <- ggplot() +
+  geom_line(aes(temp, .fitted), high_pH_preds, col = 'blue') +
+  geom_line(aes(temp, pred, group = iter), boot_high_preds, col = 'blue', alpha = 0.007) +
+  geom_point(aes(temp, rate), high.pH, size = 2, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Growth rate',
+       title = 'Respiration rate across temperatures')
+
+boot.high.pH.plot + boot.high.pH.plot.predictions
+
+high_extra_params <- calc_params(high_fit_nlsLM) %>%
+  pivot_longer(everything(), names_to =  'param', values_to = 'estimate')
+
+high_ci_extra_params <- Boot(high_fit_nlsLM, f = function(x){unlist(calc_params(x))}, labels = names(calc_params(high_fit_nlsLM)), R = 999, method = 'case') %>%
+  confint(., method = 'bca') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'case bootstrap')
+  
+high_pH_ci_extra_params <- left_join(high_ci_extra_params, high_extra_params)
+#> Joining, by = "param"
+
+#	suppressWarnings(tryCatch(rTPC::get_thermaltolerance(model), error = function(err) NA))
+
+
+```
+
+
+# Combined Bootstrapped Plots 
+
+```{r}
+
+#dont need all of the paramters 
+#specifically want Q10, Topt, Breadth, Ctmax etc.  (extract only the ones we need)
+#go one by one through thermal perofrmance paramaters
+#read through the other models to determine the model (look for thermal performance models  in the literature) 
+
+CI.high.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), high_pH_preds, col = 'cyan4') +
+  geom_line(aes(temp, pred, group = iter), boot_high_preds,
+            col = 'cyan4', alpha = 0.008) +
+  #geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper),
+              #boot_high_conf_preds, fill = 'cyan4', alpha = 0.08) +
+  geom_point(aes(temp, rate), col = 'cyan4', high.pH, size = 2, alpha = 0.5) +
+    theme_bw(base_size = 12) +
+  ylim(0, 80) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Respiration Rate (µmol/g/hour)') +
+    annotate(geom="text", x=14, y=80, label="pH ~8.0",
+              color='cyan4', size = 5, fontface="bold")
+
+
+CI.low.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), low_pH_preds, col = 'orange') +
+  geom_line(aes(temp, pred, group = iter), boot_low_preds, 
+            col = "orange", alpha = 0.008) +
+  #geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper),
+              #boot_low_conf_preds, fill = 'orange', alpha = 0.08) +
+  geom_point(aes(temp, rate), low.pH, size = 2, alpha = 0.5, col = 'orange') +
+  theme_bw(base_size = 12) +
+  ylim(0, 80) +
+  labs(x = 'Temperature (ºC)', y=(element_blank())) +
+  annotate(geom="text", x=14, y=80, label="pH ~7.7",
+              color='orange', size = 5, fontface="bold")
+
+my_title <- expression(paste(bold("  Respiration Rate of "), bolditalic("Tegula funebralis"), bold(" Across A Range of Temperatures")))
+
+CI.high.pH.plot + CI.low.pH.plot + 
+  plot_annotation(title = my_title) & 
+                  theme(plot.title = element_text(hjust = 0.5, vjust=1, size=15))
+  
+```
+
+
+```{r}
+
+low_pH_ci_extra_params <- low_pH_ci_extra_params %>% 
+  mutate(pH_Treatment="low pH")
+
+high_pH_ci_extra_params <- high_pH_ci_extra_params %>% 
+  mutate(pH_Treatment="high pH")
+
+pH_params <- bind_rows(low_pH_ci_extra_params, high_pH_ci_extra_params)
+
+ggplot(pH_params, aes(pH_Treatment, estimate, color=pH_Treatment)) +
+  geom_point(size = 4) +
+    scale_color_manual(values = c("cyan4", "orange"))+
+  geom_linerange(aes(ymin = conf_lower, ymax = conf_upper)) +
+  theme_bw() +
+  facet_wrap(~param, scales = 'free') +
+  scale_x_discrete('') +
+  labs(title = 'Calculation of Confidence Intervals for TPC parameters')
+
+```
+
+
+
+#Thermal Optima Figures
+
+```{r}
+
+ggplot(low_pH_ci_extra_params, aes(param, estimate)) +
+  geom_point(size = 4) +
+  geom_linerange(aes(ymin = conf_lower, ymax = conf_upper)) +
+  theme_bw() +
+  facet_wrap(~param, scales = 'free') +
+  scale_x_discrete('') +
+  labs(title = 'Calculation of confidence intervals for TPC parameters')
+
+ggplot(high_pH_ci_extra_params, aes(param, estimate)) +
+  geom_point(size = 4) +
+  geom_linerange(aes(ymin = conf_lower, ymax = conf_upper)) +
+  theme_bw() +
+  facet_wrap(~param, scales = 'free') +
+  scale_x_discrete('') +
+  labs(title = 'Calculation of confidence intervals for TPC parameters')
+
+
+
+
+
+low_pH_ci_extra_params <- low_pH_ci_extra_params %>% 
+  mutate(pH_Treatment="low pH")
+
+high_pH_ci_extra_params <- high_pH_ci_extra_params %>% 
+  mutate(pH_Treatment="high pH")
+
+pH_params <- bind_rows(low_pH_ci_extra_params, high_pH_ci_extra_params)
+
+ggplot(pH_params, aes(pH_Treatment, estimate, color=pH_Treatment)) +
+  geom_point(size = 4) +
+    scale_color_manual(values = c("cyan4", "orange"))+
+  geom_linerange(aes(ymin = conf_lower, ymax = conf_upper)) +
+  theme_bw() +
+  facet_wrap(~param, scales = 'free') +
+  scale_x_discrete('') +
+  labs(title = 'Calculation of confidence intervals for TPC parameters')
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
