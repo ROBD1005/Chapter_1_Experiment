@@ -1,0 +1,49 @@
+---
+title: "Map"
+author: "Robert Dellinger"
+date: "2023-06-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load required libraries
+library(ggplot2)
+library(ggmap)
+
+```
+
+
+```{r, Mapping}
+
+# Set the coordinates for the study site
+latitude <- 33.70654
+longitude <- -118.28689
+
+# Create a map using ggmap
+map <- get_googlemap(center = c(longitude, latitude), zoom = 14, maptype = "terrain", color = "bw")
+
+# Convert the map to a ggplot object
+map_plot <- ggmap(map)
+
+# Add a point for the study site
+map_plot <- map_plot +
+  geom_point(data = data.frame(latitude, longitude), aes(x = longitude, y = latitude), color = "cyan4", size = 3)
+
+# Add label for the study site
+map_plot <- map_plot +
+  geom_text(data = data.frame(latitude, longitude), aes(x = longitude, y = latitude, label = "Point Fermin, CA (Collection Site)"),
+            color = "cyan4", vjust = 4, size=4)
+
+# Set x and y axis labels
+map_plot <- map_plot +
+  xlab("Longitude") +
+  ylab("Latitude")
+
+# Display the study site map
+print(map_plot)
+```
+
+
+

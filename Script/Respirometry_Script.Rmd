@@ -18,10 +18,10 @@ rm(list=ls())
 #install.packages("devtools")
 library("devtools")
 # Install LoLinR package from GitHub
-#install_github('colin-olito/LoLinR')
-#install_github("padpadpadpad/rTPC")
+
 library("LoLinR")
 library("rTPC")
+
 
 # Create a character vector of package names
 pkgs <- c("segmented", "plotrix", "gridExtra", "lubridate", "chron", "patchwork", "tidyverse", "here", "PNWColors", "stringr", "boot", "car", "nls.multstart", "broom", "minpack.lm", "viridis", "dplyr")
@@ -41,7 +41,7 @@ lapply(pkgs, function(x) {
 ```{r, message=FALSE}
 
 #Set the path to the location of the raw oxygen data files
-path.p<-here("Data","Respirometry_Data") 
+path.p<-here::here("Data","Respirometry_Data") 
 
 # importing all individual CSV files
 file.names<-basename(list.files(path = path.p, pattern = "csv$", recursive = TRUE))
@@ -60,10 +60,10 @@ Snail_ID_filename <- Snail_ID_filename %>%
 
 # Load meta data for respiration run times, organism ID and treatments,  and organism ash free dry weight
 
-RespoMeta <- read_csv(here("Data", "Snail_Metadata", "Respirometry_Metadata.csv")) 
-TreatmentMeta <- read_csv(here("Data", "Snail_Metadata","Treatment_Organism_ID_Information.csv"))
-Organism_AFDW <- read_csv(here("Data", "Snail_Metadata", "Organism_AFDW.csv"))
-Organism_Morphometrics <- read_csv(here("Data", "Snail_Metadata", "Organism_Morphometric_Data.csv"))
+RespoMeta <- read_csv(here::here("Data", "Snail_Metadata", "Respirometry_Metadata.csv")) 
+TreatmentMeta <- read_csv(here::here("Data", "Snail_Metadata","Treatment_Organism_ID_Information.csv"))
+Organism_AFDW <- read_csv(here::here("Data", "Snail_Metadata", "Organism_AFDW.csv"))
+Organism_Morphometrics <- read_csv(here::here("Data", "Snail_Metadata", "Organism_Morphometric_Data.csv"))
 
 # join the data together
 Respo.Treatment <- left_join(TreatmentMeta, RespoMeta)
@@ -292,7 +292,7 @@ Respo.Rates.tpc <- Respo.Rates %>%
 ########### Low pH Sharpe-Schoolfield Model ################
 
 # load in data and filter to keep just a single curve (lowpH)
-low.pH <- filter(Respo.Rates.tpc, pH_Treatment == '7.7') 
+low.pH <- filter(respo.rates.tpc, pH_Treatment == '7.7') 
 
 # fit Sharpe-Schoolfield model
 low_pH_fit <- nest(low.pH, data = c(temp, rate)) %>%
@@ -326,7 +326,7 @@ low.pH.plot <- ggplot() +
 ########### High pH Sharpe-Schoolfield Model ################
 
 # load in data and filter to keep just a single curve (lowpH)
-high.pH <- filter(Respo.Rates.tpc, pH_Treatment == '8') 
+high.pH <- filter(respo.rates.tpc, pH_Treatment == '8') 
 
 # fit Sharpe-Schoolfield model
 high_pH_fit <- nest(high.pH, data = c(temp, rate)) %>%
@@ -358,7 +358,6 @@ high.pH.plot <- ggplot() +
        title = 'Respiration Rate of Tegula Across\nA Range of Temperatures at High pH')
 
 #Printing Both Plots
-
 grid.arrange(high.pH.plot, low.pH.plot, ncol=2)
 
  
@@ -517,10 +516,7 @@ high_pH_ci_extra_params <- left_join(high_ci_extra_params, high_extra_params)
 
 ```{r}
 
-#dont need all of the paramters 
-#specifically want Q10, Topt, Breadth, Ctmax etc.  (extract only the ones we need)
-#go one by one through thermal perofrmance paramaters
-#read through the other models to determine the model (look for thermal performance models  in the literature) 
+
 
 CI.high.pH.plot <- ggplot() +
   geom_line(aes(temp, .fitted), high_pH_preds, col = 'cyan4') +
