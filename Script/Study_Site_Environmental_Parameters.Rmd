@@ -1,0 +1,62 @@
+---
+title: "Study Site Environmental Parameters"
+output: html_document
+date: "2023-08-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+library(tidyverse)
+
+```
+
+
+```{r}
+
+newport.temp <- read_csv(here("Data", "Site_Data", "NewportBeach_TEMP_1924-2023.csv"), skip=44)
+
+# Filter data where TEMP_FLAG is either NaN or 1
+filtered_data <- newport.temp %>%
+  filter(is.na(TEMP_FLAG) | TEMP_FLAG == 0 | TEMP_FLAG == 1)
+
+# Convert YEAR and MONTH to a date format
+filtered_data <- filtered_data %>%
+  mutate(DATE = ymd(paste(YEAR, MONTH, DAY))) %>% 
+  select(DATE, SURF_TEMP_C, TEMP_FLAG)
+
+# Create a time series plot using ggplot
+ggplot(data = filtered_data) +
+  geom_line(aes(x = DATE, y = SURF_TEMP_C)) +
+  labs(x = "Date", y = "Surface Temperature (°C)", title = "Time Series of Surface Temperature") +
+  theme_minimal()
+```
+
+
+```{r}
+
+newport.salt <- read_csv(here("Data", "Site_Data", "NewportBeach_SALT_1924-2023.csv"), skip=44)
+
+# Filter data where TEMP_FLAG is either NaN or 1
+filtered_data <- newport.salt %>%
+  filter(is.na(SALT_FLAG) | SALT_FLAG == 0)
+
+# Convert YEAR and MONTH to a date format
+filtered_data <- filtered_data %>%
+  mutate(DATE = ymd(paste(YEAR, MONTH, DAY))) %>% 
+  select(DATE, SALINITY_PSU, SALT_FLAG)
+
+# Create a time series plot using ggplot
+ggplot(data = filtered_data) +
+  geom_line(aes(x = DATE, y = SALINITY_PSU)) +
+  labs(x = "Date", y = "Seawater Salinity (PSU)", title = "Time Series of Salinity") +
+  theme_minimal()
+  
+```
+
+```{r}
+
+
+```
+
