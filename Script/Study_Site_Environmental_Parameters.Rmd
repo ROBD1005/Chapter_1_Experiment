@@ -57,6 +57,23 @@ ggplot(data = filtered_data) +
 
 ```{r}
 
+# Read the "newport.pH" dataset
+newport.pH <- read_csv(here("Data", "Site_Data", "NewportBeach_PH_2018-2023.csv"))
 
+# Remove the first row of data and select for pH corrected data
+newport.pH <- newport.pH[-1, ] %>% 
+  mutate(pH = sea_water_ph_reported_on_total_scale_salinity_corrected) %>% 
+  select(time, pH)
+
+# Convert the "Time" column to POSIXct
+newport.pH <- newport.pH %>%
+  mutate(Time = ymd_hms(time)) %>% 
+  select(Time, pH)
+
+# Create a time series plot using ggplot
+ggplot(data = newport.pH) +
+  geom_line(aes(x = Time, y = pH)) +
+  labs(x = "Time", y = "pH", title = "Time Series of pH") +
+  theme_minimal()
 ```
 
