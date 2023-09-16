@@ -282,6 +282,7 @@ joule.rates.tpc <- joule.rates.dataset %>%
   mutate(rate=joule.sec, temp=Temp.C) %>%
   dplyr::select(pH_Treatment, temp, rate)
 
+
 # Create a single ggplot graph with both curves
 joule.rates.plot <- ggplot(joule.rates.tpc, aes(temp, rate, color = pH_Treatment)) +
   geom_image(aes(image = image), size = 0.075) +
