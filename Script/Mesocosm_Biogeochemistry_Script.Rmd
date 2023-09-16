@@ -1,0 +1,454 @@
+---
+title: "Mesocosm Environmental Parameters"
+output:
+  pdf_document: default
+  html_document: default
+date: "2023-09-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(seacarb)
+library(broom)
+library(here)
+library(lubridate)
+library(ggridges)
+library(dplyr)
+library(ggplot2)
+
+```
+
+
+### Mesocosm Daily Check Data and pH Calculations ###
+
+# Reading in Data for Mesocosm to Calculate pH 
+
+```{r}
+## bring in pH calibration files and raw data files
+pHcalib <- read_csv(here("Data", "Mesocosm_Data", "TrispHcalibration.csv")) %>%
+  mutate(TrisCalDate = ymd(TrisCalDate))
+
+pHData <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_Daily_Datasheet.csv"))%>%
+  mutate(TrisCalDate = ymd(TrisCalDate),
+         Date = mdy(Date))
+```
+
+# Calculating pH Data for Mesocosm
+
+```{r}
+
+## take the tris calibration data by each date and use them to calculate pH
+pHSlope <- pHcalib %>%
+  nest_by(TrisCalDate)%>%
+  mutate(fitpH = list(lm(mVTris~TTris, data = data))) %>% # linear regression of mV and temp of the tris
+  summarise(broom::tidy(fitpH)) %>% # make the output tidy
+  select(TrisCalDate, term, estimate) %>%
+  pivot_wider(names_from = term, values_from = estimate) %>%# put slope and intercept in their own column
+  right_join(.,pHData) %>% # join with the pH sample data
+  mutate(mVTris = Temp_C*TTris + `(Intercept)`) %>% # calculate the mV of the tris at temperature in which the pH of samples were measured
+  drop_na(Temp_C)%>%
+  drop_na(mV) %>%
+   mutate(pH = pH(Ex=mV,Etris=mVTris,S=Salinity,T=Temp_C))  # calculate pH of the samples using the pH seacarb function
+
+#Selecting for Mesocosm Biogeochemistry Data
+mesocosm.daily.data <- pHSlope %>% 
+  ungroup() %>% 
+  select(Date:mV, pH)
+
+## Write the Data
+write_csv(x = mesocosm.daily.data, file = here("Data", "Mesocosm_Data", "Mesocosm_pHProbe_Data_calculated.csv"))
+
+```
+
+# Mesocosm Daily Measurement Statistics & Figures 
+
+```{r}
+#Reading in mesocosm in situ measurements 
+mesocosm.data <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_pHProbe_Data_calculated.csv")) %>% 
+  filter(Tank_ID != "TNK_SMP") #filtering out sump data to only view expirmental tanks
+
+# Group by Temp_Treatment and pH_Treatment to find summary stats and quantiles
+summary_data <- mesocosm.data %>%
+  group_by(Temp_Treatment, pH_Treatment) %>%
+  summarize(
+    # Calculate mean and standard error for Temp_C
+    Mean_Temp_C = mean(Temp_C, na.rm = TRUE),
+    Median_Temp_C = median(Temp_C, na.rm = TRUE),
+    SE_Temp_C = sd(Temp_C, na.rm = TRUE) / sqrt(n()),
+    
+    # Calculate mean and standard error for DO_mgL
+    Mean_DO_mgL = mean(DO_mgL, na.rm = TRUE),
+    SE_DO_mgL = sd(DO_mgL, na.rm = TRUE) / sqrt(n()),
+    
+    # Calculate mean and standard error for Salinity
+    Mean_Salinity = mean(Salinity, na.rm = TRUE),
+    SE_Salinity = sd(Salinity, na.rm = TRUE) / sqrt(n()),
+    
+    # Calculate mean and standard error for pH
+    Mean_pH = mean(pH, na.rm = TRUE),
+    SE_pH = sd(pH, na.rm = TRUE) / sqrt(n()),
+    
+    # Calculate mean and standard error for DO_Percent
+    Mean_DO_Percent = mean(DO_Percent, na.rm = TRUE),
+    SE_DO_Percent = sd(DO_Percent, na.rm = TRUE) / sqrt(n()),
+    
+    # Calculate mean and standard error for Conductivity
+    Mean_Conductivity = mean(Conductivity, na.rm = TRUE),
+    SE_Conductivity = sd(Conductivity, na.rm = TRUE) / sqrt(n())
+)
+
+## Write the Data 
+write_csv(x = summary_data, file = here("Data", "Mesocosm_Data", "Mesocosm_Summary_Statistics.csv"))
+
+# Temperature Treatment Summary
+temp_summary_data <- mesocosm.data %>%
+  group_by(Temp_Treatment, pH_Treatment) %>%
+  summarize(
+    # Calculate mean and standard error for Temp_C
+    Mean_Temp_C = mean(Temp_C, na.rm = TRUE),
+    SE_Temp_C = sd(Temp_C, na.rm = TRUE) / sqrt(n()))
+
+# Temperature Treatment Summary
+pH_summary_data <- mesocosm.data %>%
+  group_by(pH_Treatment) %>%
+  summarize(
+    # Calculate mean and standard error for Temp_C
+    Mean_pH = mean(pH, na.rm = TRUE),
+    SE_pH = sd(pH, na.rm = TRUE) / sqrt(n()))
+
+print(temp_summary_data)
+print(pH_summary_data)
+
+```
+
+
+
+# Plotting the Mesocosm Variables
+
+```{r}
+
+# Create a plot with standard error bars for Mean_DO_mgL
+mesocosm_plot_do <- ggplot(summary_data, aes(x = factor(Temp_Treatment), y = Mean_DO_mgL, color = factor(pH_Treatment))) +
+  geom_point(position = position_dodge(0.75), size = 2) +
+  geom_errorbar(
+    aes(ymin = Mean_DO_mgL - SE_DO_mgL, ymax = Mean_DO_mgL + SE_DO_mgL),
+    width = 0.2,
+    position = position_dodge(0.75),
+    size = 1
+  ) +
+  labs(
+    x = "Temp Treatment",
+    y = "Mean DO (mg/L)",
+    color = "pH Treatment"
+  ) +
+  ggtitle("Mean DO (mg/L) by pH Treatment (Mean DO +/- SE)") +
+  scale_color_manual(values = c("Ambient" = "orange", "Low" = "cyan3")) +  # Specify colors as needed
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))  # Center and bold the title
+
+# Create a plot with standard error bars for Mean_DO_Percent
+mesocosm_plot_do_percent <- ggplot(summary_data, aes(x = factor(Temp_Treatment), y = Mean_DO_Percent, color = factor(pH_Treatment))) +
+  geom_point(position = position_dodge(0.75), size = 2) +
+  geom_errorbar(
+    aes(ymin = Mean_DO_Percent - SE_DO_Percent, ymax = Mean_DO_Percent + SE_DO_Percent),
+    width = 0.2,
+    position = position_dodge(0.75),
+    size = 1
+  ) +
+  labs(
+    x = "Temp Treatment",
+    y = "Mean DO %",
+    color = "pH Treatment"
+  ) +
+  ggtitle("Mean DO % by pH Treatment (Mean DO +/- SE)") +
+  scale_color_manual(values = c("Ambient" = "orange", "Low" = "cyan3")) +  # Specify colors as needed
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))  # Center and bold the title
+
+# Create a plot with standard error bars for Mean_Salinity
+mesocosm_plot_salinity <- ggplot(summary_data, aes(x = factor(Temp_Treatment), y = Mean_Salinity, color = factor(pH_Treatment))) +
+  geom_point(position = position_dodge(0.75), size = 2) +
+  geom_errorbar(
+    aes(ymin = Mean_Salinity - SE_Salinity, ymax = Mean_Salinity + SE_Salinity),
+    width = 0.2,
+    position = position_dodge(0.75),
+    size = 1
+  ) +
+  labs(
+    x = "Temp Treatment",
+    y = "Mean Salinity",
+    color = "pH Treatment"
+  ) +
+  ggtitle("Mean Salinity by pH Treatment (Mean Salinity +/- SE)") +
+  scale_color_manual(values = c("Ambient" = "orange", "Low" = "cyan3")) +  # Specify colors as needed
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))  # Center and bold the title
+
+# Create a plot with standard error bars for Mean_Conductivity
+mesocosm_plot_conductivity <- ggplot(summary_data, aes(x = factor(Temp_Treatment), y = Mean_Conductivity, color = factor(pH_Treatment))) +
+  geom_point(position = position_dodge(0.75), size = 2) +
+  geom_errorbar(
+    aes(ymin = Mean_Conductivity - SE_Conductivity, ymax = Mean_Conductivity + SE_Conductivity),
+    width = 0.2,
+    position = position_dodge(0.75),
+    size = 1
+  ) +
+  labs(
+    x = "Temp Treatment",
+    y = "Mean Conductivity",
+    color = "pH Treatment"
+  ) +
+  ggtitle("Mean Conductivity by pH Treatment (Mean Conductivity +/- SE)") +
+  scale_color_manual(values = c("Ambient" = "orange", "Low" = "cyan3")) +  # Specify colors as needed
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))  # Center and bold the title
+
+# Create a plot with standard error bars for Mean_Temp_C
+mesocosm_plot_temp <- ggplot(summary_data, aes(x = factor(Temp_Treatment), y = Mean_Temp_C, color = factor(pH_Treatment))) +
+  geom_point(position = position_dodge(0.75), size = 2) +
+  geom_errorbar(
+    aes(ymin = Mean_Temp_C - SE_Temp_C, ymax = Mean_Temp_C + SE_Temp_C),
+    width = 0.2,
+    position = position_dodge(0.75),
+    size = 1
+  ) +
+  geom_hline(yintercept = c(12, 14, 16, 18, 20, 22, 24, 26), linetype = "dashed") +
+  labs(
+    x = "Temp Treatment",
+    y = "Mean Temp (°C)",
+    color = "pH Treatment"
+  ) +
+  ggtitle("Mean Temperature by pH Treatment (Mean Temp +/- SE)") +
+  scale_color_manual(values = c("Ambient" = "orange", "Low" = "cyan3")) +  # Specify orange and cyan as colors
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))  # Center and bold the title
+
+# Create a plot with standard error bars for Median_Temp_C
+mesocosm_plot_temp_median <- ggplot(summary_data, aes(x = factor(Temp_Treatment), y = Median_Temp_C, color = factor(pH_Treatment))) +
+  geom_point(position = position_dodge(0.75), size = 2) +
+  geom_errorbar(
+    aes(ymin = Median_Temp_C - SE_Temp_C, ymax = Median_Temp_C + SE_Temp_C),
+    width = 0.2,
+    position = position_dodge(0.75),
+    size = 1
+  ) +
+  geom_hline(yintercept = c(12, 14, 16, 18, 20, 22, 24, 26), linetype = "dashed") +
+  labs(
+    x = "Temp Treatment",
+    y = "Median Temp (°C)",
+    color = "pH Treatment"
+  ) +
+  ggtitle("Median Temperature by pH Treatment (Median Temp +/- SE)") +
+  scale_color_manual(values = c("Ambient" = "orange", "Low" = "cyan3")) +  # Specify orange and cyan as colors
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))  # Center and bold the title
+
+# Create a plot with standard error bars for Mean_pH
+mesocosm_plot_pH <- ggplot(summary_data, aes(x = factor(Temp_Treatment), y = Mean_pH, color = factor(pH_Treatment))) +
+  geom_point(position = position_dodge(0.75), size = 2) +
+  geom_errorbar(
+    aes(ymin = Mean_pH - SE_pH, ymax = Mean_pH + SE_pH),
+    width = 0.2,
+    position = position_dodge(0.75),
+    size = 1
+  ) +
+  geom_hline(yintercept = c(7.7, 8.0), linetype = "dashed", color = c("cyan3", "orange")) +
+  labs(
+    x = "Temp Treatment",
+    y = "Mean pH",
+    color = "pH Treatment"
+  ) +
+  ggtitle("Mean pH by Treatment (Mean pH +/- SE)") +
+  scale_color_manual(values = c("Ambient" = "orange", "Low" = "cyan3")) +  # Specify colors as needed
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))  # Center and bold the title
+
+# Create a point plot with error bars for Mean pH and SE, colored in orange and cyan3
+mesocosm_mean_pH_plot <- ggplot(pH_summary_data, aes(x = pH_Treatment, y = Mean_pH, color = pH_Treatment)) +
+  geom_point(position = position_dodge(width = 0.2), size = 3) +
+  geom_errorbar(aes(ymin = Mean_pH - SE_pH, ymax = Mean_pH + SE_pH, color = pH_Treatment), position = position_dodge(width = 0.2), width = 0.2) +
+  labs(title = "pH Treatment Summary (Mean pH +/- SE)",
+       x = "pH Treatment",
+       y = "Mean pH",
+       color = "pH Treatment") +
+  theme_minimal() +
+  scale_color_manual(values = c("orange", "cyan3")) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))  # Center and bold the title
+
+# Display the plots
+print(mesocosm_plot_do)
+print(mesocosm_plot_do_percent)
+print(mesocosm_plot_conductivity)
+print(mesocosm_plot_salinity)
+print(mesocosm_plot_temp)
+print(mesocosm_plot_temp_median)
+print(mesocosm_plot_pH)
+print(mesocosm_mean_pH_plot)
+
+# Saving Plots to Output Folder 
+
+ggsave(here("Output/mesocosm_plot_do.png"), mesocosm_plot_do, width = 8, height = 6)
+ggsave(here("Output/mesocosm_plot_do_percent.png"), mesocosm_plot_do_percent, width = 8, height = 6)
+ggsave(here("Output/mesocosm_plot_conductivity.png"), mesocosm_plot_conductivity, width = 8, height = 6)
+ggsave(here("Output/mesocosm_plot_salinity.png"), mesocosm_plot_salinity, width = 8, height = 6)
+ggsave(here("Output/mesocosm_plot_temp.png"), mesocosm_plot_temp, width = 8, height = 6)
+ggsave(here("Output/mesocosm_plot_temp_median.png"), mesocosm_plot_temp_median, width = 8, height = 6)
+ggsave(here("Output/mesocosm_plot_pH.png"), mesocosm_plot_pH, width = 8, height = 6)
+ggsave(here("Output/mesocosm_mean_pH_plot.png"), mesocosm_mean_pH_plot, width = 8, height = 6)
+
+```
+
+
+### Mesocosm Logger Time Series Data ###
+
+```{r}
+
+# Reading in mesocosm treatment metadata
+mesocosm.metadata <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_Metadata.csv"))
+
+# Selecting all files from the folders
+files <- list.files(here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature"),
+                    pattern = ".csv", full.names = TRUE) %>% 
+  sort(decreasing = TRUE) # Files ordered by decreasing values
+
+# Reading in temperature data
+temp.data <- files %>%  # Read CSV files into one data frame
+  set_names(files) %>%  # Set names of columns based on file names
+  map_dfr(~ read_csv(.x, skip = 4, col_names = c("Date", "Temp"), col_types = list(col_character(), col_double())), .id = "filename") %>% # Skip metadata
+  mutate(
+    Tank_ID = str_extract(filename, pattern = regex("TNK-[0-9]+|TNK-[A-Z]{3}")), # String extract 
+    Tank_ID = str_replace(Tank_ID, pattern = "-", replacement = "_"), # Replace pattern 
+    Date = ymd_hms(Date), # Change to date format
+    Time = hms(format(Date, format = "%H:%M:%S")) # Separate date and time columns 
+  ) %>%  
+  select(Tank_ID, Date, Time, Temp) # Selecting columns
+
+#cleaning and filtering data
+temp.clean <- temp.data %>% 
+  mutate(Tide = ifelse(Time > hms("12:00:00") & Time < hms("18:00:00") | 
+                       Time > hms("00:00:00") & Time < hms("06:00:00"),
+                       "Low","High")) %>% # tide columns
+  filter(Date >= "2022-08-16",
+         Date <= "2022-09-02") %>% #filtering for length of the experiment
+  group_by(Tank_ID) %>% #group by Tank_ID
+  na.omit() %>% 
+  left_join(mesocosm.metadata)
+
+logger.temp.plot <- ggplot(temp.clean, aes(x = Date, y = Temp)) +
+  geom_point(aes(color = Tide), na.rm = TRUE) +
+  geom_hline(aes(yintercept = Temp_Treatment)) +
+  facet_wrap(~Tank_ID) +
+  scale_color_discrete(name = "Tank") +
+  scale_y_continuous(breaks = seq(12, 36, by = 4)) +
+  labs(
+    title = "Mesocosm Temperature Range",
+    x = "Date",
+    y = "Temperature (°C)"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Helvetica", size = 10, color = "black"),
+    legend.title = element_text(size = 10),
+    plot.title = element_text(face = "bold", hjust = 0.5)  # Bold and centered title
+  )
+
+# Filter for air temperature
+air.temperature <- temp.clean %>%
+  filter(Time > hms("13:00:00") & Time < hms("17:00:00") |
+         Time > hms("01:00:00") & Time < hms("05:00:00"))
+
+# Filter for water temperature
+water.temperature <- temp.clean %>%
+  filter(Time > hms("07:00:00") & Time < hms("11:00:00") |
+         Time > hms("19:00:00") & Time < hms("23:00:00"))
+
+# Create the air temperature plot
+air.temp.plot <- ggplot(air.temperature, aes(x = Date, y = Temp, color = Tide)) +
+  geom_point() +
+  facet_wrap(~Tank_ID) +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Helvetica", size = 10, color = 'black'),
+    legend.title = element_text(size = 12),
+    plot.title = element_text(face = "bold", hjust = 0.5)  # Bold and centered title
+  ) +
+  scale_color_discrete(name = "Tide") +
+  scale_y_continuous(breaks = seq(12, 36, by = 4)) +
+  labs(title = "Air Temperature Range") +
+  xlab("Date") +
+  ylab("Temperature (°C)")
+
+# Create the water temperature plot
+water.temp.plot <- ggplot(water.temperature, aes(x = Date, y = Temp, color = Tide)) +
+  geom_point() +
+  facet_wrap(~Tank_ID) +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Helvetica", size = 10, color = 'black'),
+    legend.title = element_text(size = 12),
+    plot.title = element_text(face = "bold", hjust = 0.5)  # Bold and centered title
+  ) +
+  scale_color_discrete(name = "Tide") +
+  scale_y_continuous(breaks = seq(12, 36, by = 4)) +
+  labs(title = "Water Temperature Range") +
+  xlab("Date") +
+  ylab("Temperature (°C)")
+
+#Display plots
+print(logger.temp.plot)
+print(air.temp.plot)
+print(water.temp.plot)
+
+# Save Mesocosm HOBO logger Plots
+ggsave(here("Output/logger_temp_plot.png"), logger.temp.plot, width = 8, height = 6)
+ggsave(here("Output/air_temp_plot.png"), air.temp.plot, width = 8, height = 6)
+ggsave(here("Output/water_temp_plot.png"), water.temp.plot, width = 8, height = 6)
+
+```
+# Mesocosm High Tide Temperatures
+
+```{r}
+
+# Filtering out High Tide Temperatures
+high.tide.temperatures <- temp.clean %>%
+  filter(Tide == 'High' & !Tank_ID %in% c("TNK_SMP", "TNK_AIR"))
+
+# Calculate the mean and standard error
+high.tide.temperatures_summary <- high.tide.temperatures %>%
+  group_by(Tank_ID, Temp_Treatment, pH_Treatment) %>%
+  summarise(
+    Mean_Temp = mean(Temp),
+    SE_Temp = sd(Temp) / sqrt(n())
+  ) %>%
+  ungroup()
+
+
+# Create the box and whisker plot
+ggplot(high.tide.temperatures, aes(x = factor(Temp_Treatment), y = Temp, fill = pH_Treatment)) +
+  geom_boxplot() +
+  labs(
+    x = "Temp Treatment",
+    y = "Temperature (°C)",
+    fill = "pH Treatment"
+  ) +
+  ggtitle("Mean Temperature in Treatment Tanks HOBO Logger") +
+  scale_fill_manual(values = c("Ambient" = "orange", "Low" = "cyan3")) +  # Specify colors
+  theme_minimal()
+
+# Create the box and whisker plot without outliers
+ggplot(high.tide.temperatures, aes(x = factor(Temp_Treatment), y = Temp, fill = pH_Treatment)) +
+  geom_boxplot(outlier.shape = NA) +  # Remove outliers
+  labs(
+    x = "Temp Treatment",
+    y = "Temperature (°C)",
+    fill = "pH Treatment"
+  ) +
+  ggtitle("Mean Temperature in Treatment Tanks HOBO Logger (no outliers)") +
+  scale_fill_manual(values = c("Ambient" = "orange", "Low" = "cyan3")) +  # Specify colors
+  theme_minimal()
+
+```
+
+

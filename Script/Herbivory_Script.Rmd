@@ -1,0 +1,201 @@
+---
+title: "Herbivory Script"
+author: "Robert Dellinger"
+date: "2023-01-27"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+#Load Library 
+
+```{r, message=FALSE}
+
+library(here)
+library(tidyverse)
+library(lubridate)
+library(performance)
+library(ggpubr)
+```
+
+# Load In Data 
+
+```{r Loading in Treatment Data, message=FALSE}
+
+#Reading in experimental treatment metadata 
+experiment.metadata <- read_csv(here::here("Data", "Snail_Metadata","Experiment_Treatment_Metadata.csv"))
+
+#Reading in organism morphometric data 
+snail.data <- read_csv(here::here("Data", "Snail_Metadata", "Tegula_funebralis_Morphometric_Data.csv")) %>% 
+  select(Snail_ID:Experiment_End_Date)
+  
+#joining experimental treatment and snail data 
+experiment.data <- left_join(experiment.metadata, snail.data, by = join_by(Snail_ID))
+
+```
+
+
+#HERBIVORY SCRIPT
+
+
+#Linear Regression 
+
+```{r Linear Regression for Kelp Experiment}
+algae.drying.rates <- read_csv(here::here("Data", "Herbivory_Data", "Algae_Drying_Weights.csv"))
+#algae.drying.rates %>% view()
+
+algae.rates <- algae.drying.rates %>% 
+  pivot_longer("0:00":"3:00", names_to="Time", values_to="Algae_Weight") 
+
+drying.rates <- algae.rates %>% 
+  mutate(Algae_Weight_Change=Initial_Algae_Weight-Algae_Weight,
+         Percent_change = Algae_Weight_Change/Initial_Algae_Weight*100,
+         Time=as.numeric(hm(Time))/60,
+         Weight_Change_Rate=Algae_Weight_Change/Time,
+         Size=case_when(Initial_Algae_Weight >= 1.2 ~ "large", #mean weight = 1.2
+                        Initial_Algae_Weight <= 1.2 ~ "small")) %>% 
+  dplyr::select(Time, Treatment, Initial_Algae_Weight,Percent_change, Algae_Weight, Algae_ID, Size) %>% 
+  mutate_all(~replace(., is.nan(.), 0))
+
+### Linear regression model (Y = Algae_Weight, X = Time)
+model_1 <- lm(Percent_change ~ Time*Treatment, data = drying.rates)
+
+### non-linear regression model (Y = Algae_Weight, X = Time)
+model_2 <- lm(Percent_change ~ poly(Time, 2), data = drying.rates) #non-linear
+
+#checking the models
+summary(model_1)
+summary(model_2)
+AIC(model_1)
+AIC(model_2)
+
+#selecting the model 
+model=model_2 
+
+# Plot the four diagnostic plots
+check_model(model, panel = TRUE)
+#model$coefficients[1]
+
+#Only using size categories for linear regression since there is not a difference between blotted and nonblotted rates of weight loss
+small_model <- lm(Percent_change ~ poly(Time, 2), data = drying.rates %>% filter(Size=="small"))
+large_model <- lm(Percent_change ~ poly(Time, 2), data = drying.rates %>% filter(Size=="large"))
+
+#plotting regressions 
+ggplot(drying.rates, aes(Time, Percent_change, color = Size)) +
+  geom_point(aes(color = Size))+
+  geom_smooth(method = "lm", formula = "y~ poly(x, 2)", se = TRUE)+
+  stat_cor(label.y = 50)+
+  facet_wrap(~Size) + theme_minimal()  +
+  theme(legend.position = "top")
+
+
+```
+
+
+```{r Loading in Herbivory Data, message=FALSE}
+
+##### HERBIVORY DATA ######
+#reading in data 
+herbivory.data <- read_csv(here::here("Data", "Herbivory_Data", "Algae_Spreadsheet.csv"))
+#algae.data %>% view()
+
+#Joining datasets
+herbivory.treatment <- left_join(herbivory.data, experiment.data)
+         
+#Cleaning data 
+herbivory.treatment <- herbivory.treatment %>% 
+  mutate(Size=case_when(Algae_Weight_Before >= 1.2 ~ "large",
+                        Algae_Weight_Before < 1.2 ~ "small")) %>% 
+  mutate(Trial_Duration = as.numeric(mdy_hm(Collection_Time_After)-mdy_hm(Placement_Time_Before))*24) %>% 
+  dplyr::select(Temp_Treatment, pH_Treatment, Algae_ID, Final_Blotted_Wet_Mass_g, 
+         Drying_Duration_Before, Algae_Weight_Before, Drying_Duration_After, Algae_Weight_After,
+         Time_Point, Trial_Duration, Identity, Size)
+
+#Normalizingdata from polynomial regression if data is either small or large for experimental algal weights
+normalized.data <- herbivory.treatment %>% 
+  mutate(percent_change_before = if_else(Size == "small",
+         predict(small_model, terms = "Time",newdata = data.frame(Time = Drying_Duration_Before)), 
+         predict(large_model, terms = "Time",newdata = data.frame(Time = Drying_Duration_Before))),
+         percent_change_after = if_else(Size == "small",
+         predict(small_model, terms = "Time",newdata = data.frame(Time = Drying_Duration_After)), 
+         predict(large_model, terms = "Time",newdata = data.frame(Time = Drying_Duration_After))))
+
+#Calculating percent change of algae 
+herbivory.data <- normalized.data %>% 
+  mutate(weight_change_before=(percent_change_before*0.01)*Algae_Weight_Before,
+         weight_change_after=(percent_change_after*0.01)*Algae_Weight_After) %>% 
+  mutate(normalized_algae_weight_before=Algae_Weight_Before + weight_change_before,
+         normalized_algae_weight_after=Algae_Weight_After + weight_change_after) %>% 
+  #mutate(algae_weight_change=Algae_Weight_Before-Algae_Weight_After) %>% 
+  mutate(normalized_algae_weight_change=normalized_algae_weight_before-normalized_algae_weight_after,
+         algae_weight_change=Algae_Weight_Before-Algae_Weight_After) 
+
+
+treatment.data<- herbivory.data %>% filter(Identity=='Treatment') 
+
+autogenic.control.data<- herbivory.data %>% filter(Identity=='Control')  %>% 
+  group_by(Temp_Treatment, Time_Point) %>% 
+  mutate(control_weight_change=algae_weight_change,
+         control_normalized_weight_change=normalized_algae_weight_change) %>% 
+  dplyr::select(Temp_Treatment, Time_Point, control_weight_change,
+                control_normalized_weight_change)
+
+controlled.data <- left_join(treatment.data, autogenic.control.data)
+controlled.data <- left_join(controlled.data, experiment.data)
+
+#average rate of algae consumption per hour per gram of snail (controlled)
+herbivory.data.final <- controlled.data %>% 
+  mutate(normalized_algae_weight_change_per_snail_hr=(normalized_algae_weight_change+
+         control_normalized_weight_change)/Initial_Blotted_Wet_Mass_g/Trial_Duration,
+         algae_weight_change_per_snail_hr=(algae_weight_change+
+         control_weight_change)/Initial_Blotted_Wet_Mass_g/Trial_Duration) %>% 
+  group_by(Temp_Treatment, pH_Treatment, Algae_ID) %>% 
+  summarise(normalized_algae_weight_change_per_snail_hr= mean(normalized_algae_weight_change_per_snail_hr),
+            algae_weight_change_per_snail_hr = mean(algae_weight_change_per_snail_hr)) 
+
+# Collect, check, and present data in long format. 
+as_tibble(herbivory.data.final)
+
+#Plotting the data using ggplot 
+ggplot(herbivory.data.final, aes(Temp_Treatment, normalized_algae_weight_change_per_snail_hr, color=pH_Treatment)) +
+  geom_point() +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Consumption Rate of Algae (g/g/hr)',
+       title = 'Normalized Consumption Rate Across Temperatures')
+
+#Plotting the data using ggplot 
+ggplot(herbivory.data.final, aes(Temp_Treatment, algae_weight_change_per_snail_hr, color=pH_Treatment)) +
+  geom_point() +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Consumption Rate of Algae (g/g/hr)',
+       title = 'Consumption Rate Across Temperatures')
+
+
+time.point.data <- controlled.data %>% 
+    mutate(normalized_algae_weight_change_per_snail_hr=(normalized_algae_weight_change+
+         control_normalized_weight_change)/Initial_Blotted_Wet_Mass_g/Trial_Duration,
+         algae_weight_change_per_snail_hr=(algae_weight_change+
+         control_weight_change)/Initial_Blotted_Wet_Mass_g/Trial_Duration) %>% 
+  select(Time_Point, Temp_Treatment, pH_Treatment, normalized_algae_weight_change_per_snail_hr, algae_weight_change_per_snail_hr)
+
+ggplot(time.point.data, aes(Temp_Treatment, algae_weight_change_per_snail_hr, color=pH_Treatment)) +
+  geom_point() +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Consumption Rate of Algae (g/g/hr)',
+       title = 'Consumption Rate Across Temperatures by Time Point') +
+  facet_wrap(~Time_Point)
+
+ggplot(time.point.data, aes(Temp_Treatment, normalized_algae_weight_change_per_snail_hr, color=pH_Treatment)) +
+  geom_point() +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Consumption Rate of Algae (g/g/hr)',
+       title = 'Normalized Consumption Rate Across Temperatures by Time Point') +
+  facet_wrap(~Time_Point)
+
+
+```
+

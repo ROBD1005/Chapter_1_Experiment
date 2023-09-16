@@ -1,4 +1,4 @@
-Tank_ID,Temp_Treatment,pH_Treament
+Tank_ID,Temp_Treatment,pH_Treatment
 TNK_2,14,Low
 TNK_3,16,Low
 TNK_4,18,Low
@@ -15,5 +15,5 @@ TNK_14,22,Ambient
 TNK_15,24,Ambient
 TNK_16,26,Ambient
 TNK_18,12,Ambient
-TNK_SMP,10,NA
-TNK_AIR,24,NA
+TNK_SMP,10,Sump
+TNK_AIR,24,Air
