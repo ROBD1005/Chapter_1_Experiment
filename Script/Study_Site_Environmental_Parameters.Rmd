@@ -37,6 +37,39 @@ ggplot(data = filtered_data) +
   labs(x = "Date", y = "Surface Temperature (°C)", title = "Time Series of Surface Temperature") +
   theme_minimal()
 ```
+```{r}
+
+study.date.temp <- read_csv(here("Data", "Site_Data", "newport-pier-automated-station-study-site-sst-jul-26-2022-aug-16-2022.csv"))[-1,]
+
+study.date.temp <- study.date.temp %>% 
+  mutate(time=ymd_hms(time))
+
+
+# Define the target date (August 16, 2022)
+target_date <- as.Date("2022-08-16")
+
+# Calculate the start date (3 weeks prior to the target date)
+start_date <- target_date - lubridate::weeks(2)
+
+# Filter the data for the specified date range
+study_date_data <- study.date.temp %>%
+  filter(time >= start_date & time < target_date)
+
+# Filter out NA and 0 values in sea_water_temperature column
+study_date_data <- study_date_data %>%
+  mutate(sea_water_temperature = as.numeric(sea_water_temperature)) %>% 
+  filter(!is.na(sea_water_temperature) & sea_water_temperature != 0)
+
+# Calculate the mean sea_water_temperature and count (N)
+mean_temp <- mean(study_date_data$sea_water_temperature, na.rm = TRUE)
+sd_temp <- sd(study_date_data$sea_water_temperature, na.rm = TRUE)
+count_temp <- nrow(study_date_data)
+  
+cat("Mean Sea Water Temperature:", mean_temp, "\n")
+cat("Standard Deviation:", sd_temp, "\n")
+cat("N:", count_temp, "\n")
+
+```
 
 
 ```{r}
@@ -99,5 +132,16 @@ ggplot(weekly_pH_data, aes(x = `Start date`, y = Mean)) +
   labs(x = "Week", y = "pH", title = "Weekly pH Data") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+```
+
+
+
+```{r}
+
+mean_pH_Data <- weekly_pH_data %>% 
+  select(Mean) %>% 
+  summarise(mean_pH=mean(as.numeric(Mean), na.rm=TRUE))
+
+print(mean_pH_Data)
 ```
 
