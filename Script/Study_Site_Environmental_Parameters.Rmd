@@ -385,11 +385,98 @@ ggplot() +
 
 
 
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(readr)
+
+# Reading the temperature data (adjust the path and column names as per your file)
+temp_data <- read.table(here::here("Data", "Site_Data", "IPTFXX_XXXITV2XMSR01_20220130.40.1"), header = TRUE)
+
+# Combining the 'date' and 'time' columns into a single 'datetime' column
+temp_data <- temp_data %>%
+  mutate(datetime = as.POSIXct(paste(date, time), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")) %>%
+  select(-date, -time)  # Optionally, drop the original 'date' and 'time' columns
+
+# Verify the conversion by checking the structure of the data frame
+str(temp_data)
+
+
+# Quality control based on flags: Excluding data with flags 1, 2, and 9
+# Assuming flag for bad data is in the 'flag' column
+temp_data <- temp_data %>%
+  filter(!grepl("1|2|9", flag))
+
+# Read the tide data (you'll need to adjust according to your actual data)
+# For the sake of this example, let's assume you have a similar tide data file
+tide_data <- read_csv(here::here("Data", "Site_Data", "CO-OPS_9410660_met.csv"))
+
+# Combining the 'Date' and 'Time (GMT)' columns into a single 'datetime' column
+# Note: You may need to adjust the format if your time doesn't include seconds
+tide_data <- tide_data %>%
+  mutate(datetime = as.POSIXct(paste(Date, format(`Time (GMT)`, format = "%H:%M:%S")), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")) %>%
+  select(-Date, -`Time (GMT)`)  # Drop the original 'Date' and 'Time (GMT)' columns
+
+# Check for missing values in 'Verified (m)'
+summary(tide_data$`Verified (m)`)
+
+# If 'Verified (m)' has too many missing values, consider using 'Predicted (m)'
+# For now, let's try recalculating the threshold excluding NAs
+high_tide_threshold <- quantile(tide_data$`Verified (m)`, 0.75, na.rm = TRUE)
+low_tide_threshold <- quantile(tide_data$`Verified (m)`, 0.25, na.rm = TRUE)
+
+
+# Check the calculated thresholds
+high_tide_threshold
+low_tide_threshold
+
+# For now, we proceed with the categorization based on quartiles as an approximation
+if (!is.na(high_tide_threshold) && !is.na(low_tide_threshold)) {
+  tide_data$tide_category <- ifelse(tide_data$`Verified (m)` >= high_tide_threshold, 'High',
+                                     ifelse(tide_data$`Verified (m)` <= low_tide_threshold, 'Low', 'Mid'))
+} else {
+  cat("Threshold calculation failed. Please verify the data for missing values or inconsistencies.")
+}
+
+
+# Joining temperature data with tide categories
+temp_data <- temp_data %>%
+  left_join(tide_data %>% select(datetime, tide_category), by = "datetime")
+
+# Separate temperature data into likely air and water temperatures based on tide categories
+air_temperatures <- temp_data %>% 
+  filter(tide_category == 'Low') %>%
+  select(datetime, tempc)
+
+water_temperatures <- temp_data %>% 
+  filter(tide_category == 'High') %>%
+  select(datetime, tempc)
+
+# Plotting the data
+ggplot(air_temperatures, aes(x = datetime, y = tempc)) +
+  geom_line(color = "blue") +
+  labs(title = "Air Temperatures Over Time", x = "Datetime", y = "Temperature (°C)")
+
+ggplot(water_temperatures, aes(x = datetime, y = tempc)) +
+  geom_line(color = "green") +
+  labs(title = "Water Temperatures Over Time", x = "Datetime", y = "Temperature (°C)")
+
+# Generating basic statistics for air and water temperatures
+air_stats <- summary(air_temperatures$tempc)
+water_stats <- summary(water_temperatures$tempc)
+
+print("Air Temperature Statistics")
+print(air_stats)
+
+print("Water Temperature Statistics")
+print(water_stats)
+```
 
 # Intertidal SST logger PISCO (Point Fermin, Los Angeles, CA)
 
 Citation: 
-
 Multi-Agency Rocky Intertidal Network (MARINe), Partnership Interdisciplinary Studies Coastal Oceans for of (PISCO), & Jennifer Burnaford. (2023). MARINe/PISCO: Intertidal: site temperature data: Point Fermin, California (IPTFXX). PISCO MN. doi:10.6085/AA/IPTFXX_XXXITV2XMSR01_20220130.50.1.
 
 ```{r}
