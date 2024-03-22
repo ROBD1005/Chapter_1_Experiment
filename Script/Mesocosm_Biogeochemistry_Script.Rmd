@@ -18,6 +18,7 @@ library(ggridges)
 library(dplyr)
 library(ggplot2)
 library(knitr)
+library(ggsignif)
 
 ```
 
@@ -33,35 +34,43 @@ pHcalib <- read_csv(here("Data", "Mesocosm_Data", "TrispHcalibration.csv")) %>%
 
 pHData <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_Daily_Datasheet.csv"))%>%
   mutate(TrisCalDate = ymd(TrisCalDate),
-         Date = mdy(Date)) %>% 
-  select(Temp_C, mV, Salinity, TrisCalDate, Date, Tank_ID)
+         Date = mdy(Date), 
+         Temp_Treatment=as.factor(Temp_Treatment), 
+         pH_Treatment=as.factor(pH_Treatment),
+         Tank_ID=as.factor(Tank_ID)) %>% 
+  select(Temp_C, mV, Salinity, TrisCalDate, Date, Tank_ID, pH_Treatment, Temp_Treatment)
 
 # Take the tris calibration data by each date and use them to calculate pH
 pHSlope <- pHcalib %>%
   group_by(TrisCalDate) %>%
-  summarise(fitpH = list(lm(mVTris ~ TTris, data = cur_data()))) %>% # Linear regression of mV and temp of the tris
-  mutate(tidy_fit = map(fitpH, tidy)) %>% # Tidy up the regression results
+  summarise(fitpH = list(lm(mVTris ~ TTris, data = cur_data()))) %>%
+  mutate(tidy_fit = map(fitpH, broom::tidy)) %>%
   unnest(tidy_fit) %>%
   select(TrisCalDate, term, estimate) %>%
   pivot_wider(names_from = term, values_from = estimate)
 
-pHjoined <- pHSlope %>%# put slope and intercept in their own column
-  right_join(.,pHData)
+# Calculate the pH values using the slope and intercept from the calibration data
+pHjoined <- pHData %>%
+  left_join(pHSlope, by = "TrisCalDate") %>%
+  mutate(mVTris_calc = Temp_C * TTris + `(Intercept)`) %>%
+  drop_na(Temp_C, mV)
 
-pHcalc <- pHjoined %>% # join with the pH sample data
-  mutate(mVTris = Temp_C*TTris + `(Intercept)`) %>% # calculate the mV of the tris at temperature in which the pH of samples were measured
-  drop_na(Temp_C)%>%
-  drop_na(mV) %>%
-  mutate(pH = pH(Ex=mV,Etris=mVTris,S=Salinity,T=Temp_C)) %>%   # calculate pH of the samples using the pH seacarb function
-  select(Date, Tank_ID, pH, mVTris, TTris) # select only the columns we need
+pHcalc <- pHjoined %>%
+  mutate(pH = seacarb::pH(Ex = mV, Etris = mVTris_calc, S = Salinity, T = Temp_C)) %>%
+  select(Date, Tank_ID, pH_Treatment, Temp_Treatment, pH)
 
-mesocosm.daily.data <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_Daily_Datasheet.csv"))%>%
-  mutate(Date = mdy(Date))  
+# Join the calculated pH values back to the mesocosm daily data
+mesocosm_daily_data <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_Daily_Datasheet.csv")) %>%
+  mutate(Date = mdy(Date), 
+         Tank_ID = as.factor(Tank_ID), 
+         pH_Treatment = as.factor(pH_Treatment), 
+         Temp_Treatment = as.factor(Temp_Treatment))
 
-mesocosm.daily.data <- left_join(mesocosm.daily.data, pHcalc, by = c("Date", "Tank_ID")) 
+final_data <- left_join(mesocosm_daily_data, pHcalc, by = c("Date", "Tank_ID", "pH_Treatment", "Temp_Treatment"))
+
 
 ## Write the Data
-write_csv(x = mesocosm.daily.data, file = here("Data", "Mesocosm_Data", "Mesocosm_pHProbe_Data_calculated.csv"))
+write_csv(final_data, here::here("Data", "Mesocosm_Data", "Mesocosm_pHProbe_Data_calculated.csv"))
 
 ```
 
@@ -159,10 +168,9 @@ write_csv(x = completed.mesocosm.dataset, file = here("Data", "Mesocosm_Data", "
 #Reading in mesocosm in situ measurements 
 mesocosm.data <- read_csv(here::here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_TA_pH.csv")) 
 
-# Calculate the difference between TA and TA_evap
 mesocosm.data <- mesocosm.data %>% 
-  mutate(TA_difference = TA - TA_evap)
-
+  mutate(TA = TA * 1e-6) # Convert TA from µmol/kg to mol/kg
+  
 # Initialize columns for carbonate system parameters in the dataframe
 mesocosm.data$pCO2 <- NA
 mesocosm.data$pCO2insitu <- NA
@@ -173,14 +181,14 @@ mesocosm.data$DIC <- NA
 # Iterate through each row of the dataframe
 for (i in 1:nrow(mesocosm.data)) {
   # Extract parameters from the current row
-  pH <- mesocosm.data$pH[i]
-  TA_diff <- mesocosm.data$TA_difference[i]  # Corrected variable name
-  Salinity <- mesocosm.data$Salinity[i]
-  Temp_C <- mesocosm.data$Temp_C[i]
+  pH <- mesocosm.data$pH[i] # pH value
+  TA <- mesocosm.data$TA[i]  # Use the converted TA in mol/kg
+  Salinity <- mesocosm.data$Salinity[i] # Assuming Salinity is in PSU
+  Temp_C <- mesocosm.data$Temp_C[i]  # Temperature in degrees Celsius
   
   # Calculate carbonate system parameters using the carb function
-  carbonate_params <- carb(flag = 8, var1 = pH, var2 = TA_diff, S = Salinity, T = Temp_C, Patm = 1, P = 0, Pt = 0, Sit = 0, 
-                           k1k2 = "x", kf = "x", ks = "d", pHscale = "T", b = "u74", warn = "y")
+  carbonate_params <- carb(flag = 8, var1 = pH, var2 = TA, S = Salinity, T = Temp_C, Patm = 1, P = 0, Pt = 0, Sit = 0, 
+                           k1k2 = "l", kf = "pf", ks = "d", pHscale = "T", b = "u74", warn = "y")
   
   # Assign the calculated carbonate system parameters to the dataframe
   mesocosm.data$pCO2[i] <- carbonate_params$pCO2
@@ -190,52 +198,148 @@ for (i in 1:nrow(mesocosm.data)) {
   mesocosm.data$DIC[i] <- carbonate_params$DIC
 }
 
+mesocosm.data <- mesocosm.data %>% 
+  mutate(TA = TA * 1e6, # Convert TA back to µmol/kg
+         pCO2 = pCO2, 
+         pCO2insitu = pCO2insitu,
+         HCO3 = HCO3 * 1e6, # Convert HCO3 from mol/kg to µmol/kg
+         CO3 = CO3 * 1e6, # Convert CO3 from mol/kg to µmol/kg
+         DIC = DIC * 1e6) # Convert DIC from mol/kg to µmol/kg
 
-mesocosm.data
+print(mesocosm.data)
+
+write_csv(mesocosm.data, here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"))
 ```
 
+
 ```{r}
-library(ggsignif)
 
-mesocosm.data <- mesocosm.data %>% 
-  filter(pH_Treatment != "Sump")
+mesocosm.data <- read_csv(here::here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"))
 
-# If everything looks good, proceed with your code
-ph.data <- mesocosm.data %>%
-  select(pH, pH_Treatment) %>% 
+# Linear regression for Salinity and temperature
+lm_result_temp_salinity <- lm(Salinity ~ Temp_C, data = mesocosm.data)
+summary(lm_result_temp_salinity)
+plot(lm_result_temp_salinity)
+
+# Plot Temperature vs. Salinity with a linear regression line
+ggplot(mesocosm.data, aes(x = Temp_C, y = Salinity)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color="lightyellow") +
+  labs(x = "Temperature (°C)", y = "Salinity (ppt)") +
+  theme_minimal() +
+  ggtitle("Temperature vs. Salinity")
+
+oxygen.data <- mesocosm.data %>%
+  filter(pH_Treatment != "Sump") %>% 
+  select(DO_mgL, DO_Percent, Temp_C, pH_Treatment, Temp_Treatment) %>%
+  na.omit()
+
+# Linear regression for Temperature and Dissolved Oxygen
+ggplot(oxygen.data, aes(x = Temp_C, y = DO_mgL, group=pH_Treatment, color=pH_Treatment)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(x = "Temperature (°C)", y = "Dissolved Oxygen (mg/L)") +
+  theme_minimal() +
+  ggtitle("Temperature vs. Dissolved Oxygen")
+
+# Linear regression for Temperature and Dissolved Oxygen
+ggplot(oxygen.data, aes(x = Temp_C, y = DO_Percent, group=pH_Treatment, color=pH_Treatment)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(x = "Temperature (°C)", y = "Dissolved Oxygen (%)") +
+  theme_minimal() +
+  ggtitle("Temperature vs. Dissolved Oxygen")
+
+# Oxygen saturation linear regression
+lm_result_o2_temp <- lm(DO_mgL ~ Temp_C, data = oxygen.data)
+summary(lm_result_o2_temp)
+plot(lm_result_o2_temp)
+
+# Get a summary of the model
+model_summary <- summary(lm_result_o2_temp)
+
+# Access and print the R-squared value
+r_squared <- model_summary$r.squared
+print(paste("R-squared: DO mg/L", r_squared))
+
+lm_result_o2_temp <- lm(DO_Percent ~ Temp_C, data = oxygen.data)
+summary(lm_result_o2_temp)
+plot(lm_result_o2_temp)
+
+# Get a summary of the model
+model_summary <- summary(lm_result_o2_temp)
+
+# Access and print the R-squared value
+r_squared <- model_summary$r.squared
+print(paste("R-squared: DO (%)", r_squared))
+
+```
+
+
+
+```{r}
+
+mesocosm.data <- read_csv(here::here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"))
+
+#summary statistics for pH by treatment
+ph.means <- mesocosm.data %>%
   group_by(pH_Treatment) %>%
-  summarize(Mean_pH = mean(pH, na.rm = TRUE),
+  dplyr::summarize(Mean_pH = mean(pH, na.rm = TRUE),
             Sd_pH = sd(pH, na.rm = TRUE))
 
-print(ph.data)
+print(ph.means)
+
+#summary statistics for pH by treatment
+pCO2.means <- mesocosm.data %>%
+  group_by(pH_Treatment) %>%
+  dplyr::summarize(Mean_pCO2 = mean(pCO2, na.rm = TRUE),
+            Sd_pCO2 = sd(pCO2, na.rm = TRUE))
+
+print(pCO2.means)
 
 # Assuming `mesocosm.data` is already loaded and you have created `ph.data` as per the previous code
+ph.data <- mesocosm.data %>%
+  select(pH_Treatment, pH) %>%
+  filter(pH_Treatment != "Sump") # Filter out the "Sump" treatment
+
+ph.data <- na.omit(ph.data)
 
 # Perform t-test to compare means
-t_test_result <- t.test(pH ~ pH_Treatment, data = mesocosm.data)
+t_test_result <- t.test(pH ~ pH_Treatment, data = ph.data)
 
 # Print the t-test results
 print(t_test_result)
 
-# Plot the data
-ggplot(mesocosm.data, aes(x = pH_Treatment, y = pH, fill = pH_Treatment)) +
+
+# Calculate IQR threshold
+outlier.data <- ph.data %>%
+  group_by(pH_Treatment) %>%
+  mutate(Q1 = quantile(pH, 0.25),
+         Q3 = quantile(pH, 0.75),
+         IQR = Q3 - Q1,
+         Lower = Q1 - 1.5 * IQR,
+         Upper = Q3 + 1.5 * IQR) %>%
+  filter(pH >= Lower & pH <= Upper)
+
+# Create a boxplot with significance annotation
+# Basic plot without stat_signif
+t_test_ph <- ggplot(ph.data, aes(x = pH_Treatment, y = pH, fill = pH_Treatment)) +
+  scale_fill_manual(values = c("Ambient" = "darkcyan", "Low" = "cyan3"),
+                    labels = c("Ambient" = "High pH", "Low" = "Low pH")) +
   geom_boxplot() +
-  geom_signif(comparisons = list(c("Low", "High")), 
-              test = "t.test", 
-              map_signif_level = TRUE, 
-              textsize = 4, 
-              vjust = -0.5) +
-  labs(title = "pH by Treatment",
-       x = "Treatment",
-       y = "pH",
-       fill = "Treatment") +
-  theme_minimal() +
-  theme(axis.text = element_text(size = 10),
-        axis.title = element_text(size = 12, face = "bold"),
-        plot.title = element_text(size = 14, face = "bold"),
-        legend.title = element_text(size = 10),
-        legend.text = element_text(size = 8),
-        legend.position = "top")
+  labs(x = "Treatment", y = "pH (total scale)", fill = "Treatment") +
+  theme_classic() +
+  theme(text = element_text(family = "Times New Roman", size = 12),
+        axis.title = element_text(size = 12),
+        legend.position = "right") +
+   guides(fill = guide_legend(title = "pH Treatment"))  # Custom legend title
+
+# Annotate manually if t_test_result is significant
+if (t_test_result$p.value < 0.05) {
+  t_test_ph <- t_test_ph + annotate("text", x = 1.5, y = max(ph.data$pH), label = paste("p =", signif(t_test_result$p.value, 3)))
+}
+
+print(t_test_ph)
 ```
 
 
@@ -244,30 +348,30 @@ ggplot(mesocosm.data, aes(x = pH_Treatment, y = pH, fill = pH_Treatment)) +
 # Group by Temp_Treatment and pH_Treatment to find summary stats and quantiles
 summary_data <- mesocosm.data %>%
   group_by(Temp_Treatment, pH_Treatment) %>%
-  summarize(
+  dplyr::summarize(
     # Calculate mean and standard deviation for Temp_C
     Mean_Temp_C = mean(Temp_C, na.rm = TRUE),
     SD_Temp_C = sd(Temp_C, na.rm = TRUE) / sqrt(n()),
     
-    # Calculate mean and standard deviation for pH
-    Mean_pH = mean(pH, na.rm = TRUE),
-    SD_pH = sd(pH, na.rm = TRUE) / sqrt(n()),
-    
     # Calculate mean and standard deviation for DO_mgL
     Mean_DO_mgL = mean(DO_mgL, na.rm = TRUE),
     SD_DO_mgL = sd(DO_mgL, na.rm = TRUE) / sqrt(n()),
+        
+    # Calculate mean and standard deviation for DO_Percent
+    Mean_DO_Percent = mean(DO_Percent, na.rm = TRUE),
+    SD_DO_Percent = sd(DO_Percent, na.rm = TRUE) / sqrt(n()),
     
     # Calculate mean and standard deviation for Salinity
     Mean_Salinity = mean(Salinity, na.rm = TRUE),
     SD_Salinity = sd(Salinity, na.rm = TRUE) / sqrt(n()),
     
-    # Calculate mean and standard deviation for DO_Percent
-    Mean_DO_Percent = mean(DO_Percent, na.rm = TRUE),
-    SD_DO_Percent = sd(DO_Percent, na.rm = TRUE) / sqrt(n()),
-    
     # Calculate mean and standard deviation for Conductivity
     Mean_Conductivity = mean(Conductivity, na.rm = TRUE),
     SD_Conductivity = sd(Conductivity, na.rm = TRUE) / sqrt(n()),
+    
+    # Calculate mean and standard deviation for pH
+    Mean_pH = mean(pH, na.rm = TRUE),
+    SD_pH = sd(pH, na.rm = TRUE) / sqrt(n()),
     
     # Calculate mean and standard deviation for TA
     Mean_TA = mean(TA, na.rm = TRUE),
@@ -289,9 +393,7 @@ summary_data <- mesocosm.data %>%
     Mean_DIC = mean(DIC, na.rm = TRUE),
     SD_DIC = sd(DIC, na.rm = TRUE) / sqrt(n())
     
-)
-
-summary_table <-summary_data %>%
+) %>% 
   mutate(
     # Format columns as mean +- sd
     Mean_Temp_C = paste(round(Mean_Temp_C, 2), "±", round(SD_Temp_C, 2)),
@@ -306,11 +408,31 @@ summary_table <-summary_data %>%
     Mean_DIC = paste(round(Mean_DIC, 2), "±", round(SD_DIC, 2))
   ) %>%
   select(-SD_Temp_C, -SD_pH, -SD_Salinity, -SD_DO_Percent, -SD_DO_mgL, -Mean_DO_mgL, -SD_Conductivity, -SD_TA, -SD_pCO2, -SD_HCO3, -SD_CO3, -SD_DIC) %>%
-  arrange(Temp_Treatment, pH_Treatment)
+  arrange(pH_Treatment, Temp_Treatment)
+
+# Rename columns to include units in labels
+summary_table <- rename(summary_data,
+  `Mean Temp (°C)` = Mean_Temp_C,
+  `Mean pH` = Mean_pH,
+  `Mean Salinity (ppt)` = Mean_Salinity,
+  `Mean DO Percent (%)` = Mean_DO_Percent,
+  `Mean Conductivity (µS/cm)` = Mean_Conductivity,
+  `Mean TA (µmol/kg)` = Mean_TA,
+  `Mean pCO2 (atm)` = Mean_pCO2,
+  `Mean DIC (µmol/kg)` = Mean_DIC,
+  `Mean HCO3 (µmol/kg)` = Mean_HCO3,
+  `Mean CO3 (µmol/kg)` = Mean_CO3
+)
+
+summary_table <- summary_table %>%
+  mutate(
+    pH_Treatment = factor(pH_Treatment, levels = c("Ambient", "Low", "Sump"))
+  ) %>%
+  arrange(pH_Treatment, Temp_Treatment)
 
 
 #save summary table in csv format
-write_csv(summary_table, here("Output", "mesocosm_summary_table.csv"))
+write_csv(summary_data, here("Output", "mesocosm_summary_table.csv"))
 
 #read csv file
 read_csv(here("Output", "mesocosm_summary_table.csv")) 

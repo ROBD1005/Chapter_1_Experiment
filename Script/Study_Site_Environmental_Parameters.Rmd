@@ -9,470 +9,484 @@ date: "2023-08-28"
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
+library(readr)
 library(here)
 library(tidyverse)
 library(lubridate)
-library(zoo)
 library(ggplot2)
 library(ggpubr) 
+library(ggspatial)
+library(ggthemes)
+library(gridExtra)
+library(grid)
+library(Hmisc)
 library(oce)
 library(ocedata)
-library(marmap)
+library(nlme)
+library(zoo)
+library(sf)
+library(suncalc)
+library(extrafont)
 ```
 
-# Study Site Map 
 
+# Study Site Map Oce Package 
 
 ```{r}
-# Load required library
-Coastline_Fine <- data("coastlineWorldFine") #fine-scale-scale coastline data
-
-# Set up plot margins
-par(mar=c(2, 2, 2, 1))
-
-# Define study site coordinates
+# Define study site coordinates and labels
 center_lon <- -118.28599
 center_lat <- 33.70679092
-
-# Set lonlim and latlim from bounding box coordinates
-lonlim <- c(-118.5, -118)
-latlim <- c(33.5, 34)
-
-Bathymetry <- as.topo(getNOAA.bathy(-119, -117, 33, 34.5, resolution=0.001)) #coordinates for bathymetry data from NOAA (Northern Hemisphere)
-
-# Define station data for the study site
-study_site <- data.frame(name = "Point Fermin Park Beach,\n Los Angeles, CA",
+study_site <- data.frame(name = "Point Fermin Park Beach,\n       Los Angeles, CA",
                          lon = center_lon,
                          lat = center_lat)
 
-# Create base map
-coastline.map <- function() { 
-  mapPlot(coastlineWorldFine, #using fine-scale data
-        projection="+proj=mill", #setting the projection type
-        longitudelim=lonlim, 
-        latitudelim=latlim,
-        lonlabels=TRUE,
-        latlabels=TRUE,
-        geographical=1,
-        clip=TRUE)
-}
-```
+# Define lonlim and latlim from bounding box coordinates
+lonlim <- c(-118.5, -118.1)
+latlim <- c(33.6, 34)
+
+# Expand the limits by 1 degree on each side
+expanded_lonlim <- lonlim + c(-1, 1)
+expanded_latlim <- latlim + c(-1, 1)
+
+# Define the corners of the expanded rectangle
+expanded_rect_coords <- data.frame(
+  longitude = c(min(expanded_lonlim), max(expanded_lonlim), max(expanded_lonlim), min(expanded_lonlim), min(expanded_lonlim)),
+  latitude = c(min(expanded_latlim), min(expanded_latlim), max(expanded_latlim), max(expanded_latlim), min(expanded_latlim))
+)
+
+# Setup the plot
+png(here::here("Output", "study_site_map.png"), width = 6, height = 6, units = 'in', res = 1200, family = "Times New Roman")
+par(mar = c(3, 2, 2, 2), family = "Times New Roman")
+
+# Create a base map
+mapPlot(coastlineWorldFine, 
+        longitudelim = lonlim, 
+        latitudelim = latlim, 
+        lonlabels = TRUE,
+        latlabels = TRUE,
+        geographical = 4,
+        projection = "+proj=mill",
+        col = "darkolivegreen3", 
+        border = "black",
+        clip = TRUE)
+
+# Plot the polygon with the specified color
+mapPolygon(expanded_rect_coords, col="cyan3", border=NA)
+mapPolygon(coastlineWorldFine, col = "darkolivegreen3", border = "grey40")
 
 
-```{r}
+# Add grid
+mapGrid(dlongitude = 0.1, dlatitude = 0.1, col = "black", lty = 3)
 
-
-
-coastline.map()
-#Overlaying Bathymetry Data
-mapImage(Bathymetry, col=oceColorsGebco, breaks=seq(-500, 0, 10), gridder = "interp")
-mapImage(Bathymetry, col=oceColorsGebco, breaks=seq(-500, 0, 10), filledContour = TRUE, gridder = "interp")
-#Adding in Coastline
-mapPolygon(coastlineWorldFine, col = "darkolivegreen3", border = "black") 
-#Adding in Grid
-mapGrid(dlongitude=0.1, dlatitude=0.1, col="black", lty=3) 
-# Overlay study site
+# Overlay the study site with a clearly visible point
 mapPoints(longitude = study_site$lon,
-          latitude = study_site$lat, 
-          pch = 20, 
-          cex = 1.75)
-# Add study site label
-mapText(longitude = study_site$lon + .095,
-        latitude = study_site$lat + .0955,
+          latitude = study_site$lat,
+          pch = 20, cex = 1.5, col = "orange")
+
+# Add a clearly readable label for the study site
+mapText(longitude = study_site$lon - 0.075,
+        latitude = study_site$lat + 0.12,
         labels = study_site$name,
-        cex = 0.8, #font size
-        col="black",
-        bg = "white") # changing font family
+        cex = 0.9, col = "black", font = 2, adj = c(0, 0.5), family = "Times New Roman")
 
-# Add a scale bar
-mapScalebar(x = "topright",col = "black", cex = 0.8)
-
-# Add a title
-title(main = "Study Area Map: Point Fermin Park Beach", font.main = 1.5, cex.main = 1, adj = 0.5)
-```
-
-
-```{r}
-
-
-# Define coordinates
-west <- -118.28599
-north <- 33.70679092
-
-# Create Leaflet map
-leaflet() %>%
-  addTiles() %>%
-  addPolygons(
-    lng = c(west, west),  # Two points to draw a line at the west boundary
-    lat = c(north, north), # Corresponding latitudes
-    weight = 5,
-    color = "cyan4",
-    opacity = 1
-  ) %>%
-  addMarkers(lng = west, lat = north, popup = "West Corner")
-
+# Include a scale bar with enhanced visibility
+mapScalebar(x = "topright", col = "black", cex = 0.7)
 
 ```
 
-# Open Water SST for a nearby site (Newport Beach Pier)
+# Open Water SST and pH for a nearby site (Newport Beach Pier)
 
-#Temp and Salinity Data from UCSD Shore Stations 1924-2023
+#Temperature Data from UCSD Shore Stations 1924-2023
  
-Carter, Melissa L.; Flick, Reinhard E.; Terrill, Eric; Beckhaus, Elena C.; Martin, Kayla; Fey, Connie L.; Walker, Patricia W.; Largier, John L.; McGowan, John A. (2022). Shore Stations Program, Newport Beach - Balboa Pier (Newport Beach Archive, 2023-09-30). In Shore Stations Program Data Archive: Current and Historical Coastal Ocean Temperature and Salinity Measurements from California Stations. UC San Diego Library Digital Collections.
+Carter, Melissa L.; Flick, Reinhard E.; Terrill, Eric; Beckhaus, Elena C.; Martin, Kayla; Fey, Connie L.; Walker, Patricia W.; Largier, John L.; McGowan, John A. (2022). Shore Stations Program, Newport Beach - Balboa Pier. In Shore Stations Program Data Archive: Current and Historical Coastal Ocean Temperature and Salinity Measurements from California Stations. UC San Diego Library Digital Collections. https://doi.org/10.6075/J0GX4BCP
+
+Temperature data provided by the Shore Stations Program sponsored at Scripps Institution of Oceanography by California Department of Parks and Recreation, Natural Resources Division,  Award# C1670003, and pH data provided by the Southern California Coastal Ocean Observing System.
+
+pH Data 
+# Temperature Histogram 
+
+```{r}
+# Read the CSV file
+newport.temp <- read_csv(here("Data", "Site_Data", "NewportBeach_TEMP_1924-2023.csv"))
+
+# Filter data using TEMP_FLAG 
+# 0 = good data, 5 = data from another source, 6 = data from a different site
+# NaN is used to indicate historical/missing data
+filtered_temp_data <- newport.temp %>%
+  filter(is.na(TEMP_FLAG) | TEMP_FLAG %in% c(0, 5, 6)) %>%
+  filter(SURF_TEMP_C >= 9 & SURF_TEMP_C <= 26) %>%
+  mutate(Date = as.Date(paste(YEAR, MONTH, DAY, sep = "-"))) %>% 
+  filter(Date >= as.Date("2020-01-01") & Date <= as.Date("2024-01-01")) %>% 
+  select(Date, Temperature=SURF_TEMP_C)
+
+#Daily Mean Temperature
+experimental_daily_temp_stats <- filtered_temp_data %>%
+  group_by(Date) %>%
+  summarise(Mean_Temp = mean(Temperature, na.rm = TRUE)) 
+
+# Calculate the overall mean temperature
+overall_mean_temp <- mean(experimental_daily_temp_stats$Mean_Temp, na.rm = TRUE)
+#print the overall mean temperature and pH
+print(paste("Overall mean temperature:", round(overall_mean_temp, 2), "°C"))
+
+# Calculate the mean temperature for the duration of the experiment
+experimental_dates_temp <- experimental_daily_temp_stats %>% 
+  filter(Date >= as.Date("2022-08-01") & Date <= as.Date("2022-09-30"))
+experimental_mean_temp <- mean(experimental_dates_temp$Mean_Temp, na.rm = TRUE)
+#print the overall mean temperature and pH
+print(paste("Experimental mean temperature:", round(experimental_mean_temp, 2), "°C"))
+
+#Histogram of Daily Mean Temperature
+histogram_temp <- ggplot(experimental_daily_temp_stats, aes(x=Mean_Temp)) +
+  geom_vline(aes(xintercept=12), color="#FFA726", size=1) +
+  geom_vline(aes(xintercept=14), color="#FFA726", size=1) +
+  geom_vline(aes(xintercept=16), color="#FFA726", size=1) +
+  geom_vline(aes(xintercept=18), color="#FFA726", size=1) +
+  geom_vline(aes(xintercept=20), color="#FFA726", size=1) +
+  geom_vline(aes(xintercept=22), color="#FFA726", size=1) +
+  geom_vline(aes(xintercept=24), color="#FFA726", size=1) +
+  geom_vline(aes(xintercept=26), color="#FFA726", size=1) +
+  geom_histogram(binwidth = 0.5, fill = "#FFE0B2", color = "darkslategrey", alpha=0.5) +
+  geom_vline(aes(xintercept=overall_mean_temp), color="#F57C00", linetype="dashed", size=1) +
+  geom_vline(aes(xintercept=experimental_mean_temp), color="#F57C00", linetype="dotted", size=1) +
+  scale_x_continuous(breaks = seq(12, 26, by = 2)) +
+  labs(x = "Mean Sea Surface Temperature (°C)",
+       y = "Frequency",
+       title="") +
+  theme_classic() +
+  theme(text = element_text(family = "Times New Roman"),
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 10))
+
+# Output the histogram
+print(histogram_temp)
+```
 
 
 ```{r}
+# Read and preprocess data
+newportbeach.pH <- read_csv(here("Data", "Site_Data", "Newport_pH_2005-2024.csv"))[-1,]
 
-# Read the "NewportBeach_TEMP_1924-2023.csv" file
-newport.temp <- read_csv(here("Data", "Site_Data", "NewportBeach_TEMP_1924-2023.csv"), skip=44)
+filtered.newportbeach.pH <- newportbeach.pH %>%
+  mutate(pH = sea_water_ph_reported_on_total_scale_salinity_corrected,
+         time = as.POSIXct(time, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"), Date=as.Date(time)) %>%
+  filter(sea_water_ph_reported_on_total_scale_salinity_corrected_qc_agg %in% 1,
+         Date >= as.Date("2020-01-01") & Date <= as.Date("2024-01-01")) %>% 
+  select(Date, time, pH)
 
-# Location and data information
-location_info <- "Data: Scripps Institute of Oceanography Shore Stations Program\nNewport Beach, CA (33°36'24.1''N 117°55'48.7''W)"
+#Daily Mean pH
+experimental_daily_pH_stats <- filtered.newportbeach.pH %>%
+  group_by(Date) %>%
+  summarise(Mean_pH = mean(pH, na.rm = TRUE)) 
 
-# Filter data where TEMP_FLAG is either 0 or 5
-# 0 = good data, 5 = data from another source, 6= data from a different site, NaN = historical/missing data
-filtered_data <- newport.temp %>%
-  filter(TEMP_FLAG %in% c(NaN, 0, 5, 6)) %>% 
-  filter(SURF_TEMP_C >= 9 & SURF_TEMP_C <= 26)
+# Calculate the overall mean pH
+overall_mean_pH <- mean(experimental_daily_pH_stats$Mean_pH, na.rm = TRUE)
+#print the overall mean temperature and pH
+print(paste("Overall mean pH:", round(overall_mean_pH, 2), "°C"))
 
-# Convert YEAR and MONTH to a date format
-filtered_data <- filtered_data  %>%
-  mutate(DATE = as.Date(paste(YEAR, MONTH, DAY), format = "%Y %m %d"))  %>%
-  filter(DATE >= as.Date("1925-01-01") & DATE <= as.Date("2023-12-31")) %>%  
-  select(DATE, YEAR, MONTH, DAY, SURF_TEMP_C)
+# Calculate the mean pH for the duration of the experiment
+experimental_dates_pH <- experimental_daily_pH_stats %>% 
+  filter(Date >= as.Date("2022-08-01") & Date <= as.Date("2022-09-30"))
+experimental_mean_pH <- mean(experimental_dates_pH$Mean_pH, na.rm = TRUE)
+#print the overall mean temperature and pH
+print(paste("Experimental mean pH:", round(experimental_mean_pH, 2), "°C"))
 
-# Define color gradient from yellow to orange
-color_palette <- colorRampPalette(c("yellow", "orange"))
+histogram_pH <- ggplot(experimental_daily_pH_stats, aes(x=Mean_pH)) +
+  geom_vline(aes(xintercept=7.6), color="darkcyan", size=1) +
+  geom_vline(aes(xintercept=7.9), color="darkcyan", size=1) +
+  geom_vline(aes(xintercept=overall_mean_pH), color="cyan3", linetype="dashed", size=1) +
+  #geom_vline(aes(xintercept=experimental_mean_pH), color="cyan3", linetype="dotted", size=1) +
+  geom_histogram(binwidth = 0.05, fill = "cyan2", color = "darkslategrey", alpha =0.5) +
+  scale_x_continuous(breaks = seq(7, 8.5, by = 0.1)) +
+  labs(x = "Mean pH (total scale)",
+       y = "Frequency",
+       title="") +
+  theme_classic() +
+  theme(text = element_text(family = "Times New Roman"),
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 10))
 
-# Create a time series plot using ggplot of daily SST with color gradient
-timeseries_plot <- ggplot(data = filtered_data) +
-  geom_line(aes(x = DATE, y = SURF_TEMP_C, color = SURF_TEMP_C)) +  # Add data line with color gradient
-  scale_color_gradient(low = "yellow", high = "orange", name = "Temp (°C)") +  # Set color scale and legend
-  labs(x = "Date", y = "Sea Surface Temperature (°C)", 
-       title = "Time Series of Daily Sea Surface Temperature 1925-2023",  # Main title
-       subtitle = location_info) +  # Subtitle with location info
-  theme_minimal() +  # Subtitle with location info
-  scale_x_date(date_breaks = "10 years", date_labels = "%Y", limits = as.Date(c("1925-01-01", "2023-12-31"))) +  # Set x-axis breaks and limits
-  theme(
-    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),  # Centered title
-    plot.subtitle = element_text(hjust = 0.5),  # Centered subtitle
-    axis.title = element_text(size = 12, face = "bold"),  # Axis title size and weight
-    axis.text = element_text(size = 12),  # Axis text size
-    legend.position = "none"  # Remove legend
-  ) 
+# Output the histogram
+print(histogram_pH)
 
-timeseries_plot
-# Save the plot as a PNG file
-ggsave(filename = here::here("Images", "SST_timeseries_plot.png"), plot = timeseries_plot, width = 10, height = 6)
+# Combine the plots vertically
+combined_histograms <- histogram_temp / histogram_pH 
+print(combined_histograms)
+
+# Save the combined plot
+ggsave(here::here("Output", "stacked_histograms.png"), combined_histograms, width = 6, height = 6, dpi = 1400)
 
 ```
 
 
 
+
+
 ```{r}
+# Read the image
+map_image <- readPNG(here::here("Output", "study_site_map.png"))
 
-# Location and data information
-location_info <- "Data:  Southern California Coastal Ocean Observing System\nNewport Beach, CA (33°36'24.1''N 117°55'48.7''W)"
+# Convert the image into a rasterGrob object
+map_grob <- rasterGrob(map_image, interpolate = TRUE)
 
-# Read data and preprocess
-newportbeach.pH <- read_csv(here("Data", "Site_Data", "newport-pier-automated-shore-station_pH_06-2022-06-2023.csv"))[-1,]
-newportbeach.pH <- newportbeach.pH %>% 
-  mutate(time=ymd_hms(time)) %>% 
-  select(time, sea_water_ph_reported_on_total_scale_salinity_corrected, sea_water_ph_reported_on_total_scale_salinity_corrected_qc_agg)
+# Create an empty plot and add the image
+map_plot <- ggplot() + 
+  annotation_custom(map_grob, xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf) +
+  theme_void()
 
-# Filter data based on QC and pH range
-qc.newportbeach.pH <- newportbeach.pH %>%
-  filter(
-    sea_water_ph_reported_on_total_scale_salinity_corrected_qc_agg %in% c(1, 2) &
-    sea_water_ph_reported_on_total_scale_salinity_corrected >= 7.03 &
-    sea_water_ph_reported_on_total_scale_salinity_corrected <= 8.66
+# Use the height ratio to define the relative heights in the grid arrangement
+combined_plot <- grid.arrange(
+  map_plot,
+  arrangeGrob(histogram_temp, histogram_pH, nrow = 2),
+  ncol = 2,
+  widths = c(2.5, 1.5),  # You may need to adjust this based on the map's aspect ratio
+  heights = c(2.5, 1.5)
+)
+
+# Print the combined plot to verify alignment
+print(combined_plot)
+
+# Save the combined plot
+ggsave("stacked_timeseries.png", combined_plot, width = 8, height = 5, dpi = 1200)
+```
+
+
+
+
+```{r}
+# Read the CSV file
+newport.temp <- read_csv(here("Data", "Site_Data", "NewportBeach_TEMP_1924-2023.csv"))
+
+# Filter data using TEMP_FLAG 
+# 0 = good data, 5 = data from another source, 6 = data from a different site
+# NaN is used to indicate historical/missing data
+filtered_temp_data <- newport.temp %>%
+  filter(is.na(TEMP_FLAG) | TEMP_FLAG %in% c(0, 5, 6)) %>%
+  filter(SURF_TEMP_C >= 9 & SURF_TEMP_C <= 26) %>%
+  mutate(DATE = as.Date(paste(YEAR, MONTH, DAY, sep = "-")))
+
+# Calculate the 95% CI for daily temperature
+daily_temp_stats <- filtered_temp_data %>%
+  group_by(DATE) %>%
+  summarise(
+    Mean = mean(SURF_TEMP_C, na.rm = TRUE))
+
+# Calculate the overall mean temperature
+overall_mean_temp <- mean(filtered_temp_data$SURF_TEMP_C, na.rm = TRUE)
+
+#print the overall mean temperature and pH
+print(paste("Overall mean temperature:", round(overall_mean_temp, 2), "°C"))
+
+# Plotting
+temperature_timeseries <- ggplot(monthly_temp_stats, aes(x = as.Date(YM), y = Mean)) +
+  geom_line(aes(color = Mean), size = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "#CD3333", size=0.5, alpha = .5) +
+  scale_color_gradient(low = "yellow", high = "#CD3333", limits = c(10, 25), breaks = seq(10, 25, by = 5), name = "Temp") +
+  scale_x_date(date_breaks = "10 years", date_labels = "%Y") +
+  scale_y_continuous(limits = c(10, 25), breaks = seq(10, 25, by = 5)) +
+  theme_minimal() +
+  theme(text = element_text(family = "Times New Roman"),
+        axis.title.y = element_text(size = 10, face = "bold"),
+        axis.text.y = element_text(size = 8),
+        axis.title.x = element_text(size = 10, face = "bold"),
+        legend.title = element_text(face = "bold")) +
+  labs(y = "Sea Surface Temperature (°C)", x="Date", color = "Temp (°C)", 
+       title = "", subtitle = "")
+
+print(temperature_timeseries)
+```
+
+```{r}
+# Read and preprocess data
+newportbeach.pH <- read_csv(here("Data", "Site_Data", "Newport_pH_2005-2024.csv"))[-1,]
+
+filtered.newportbeach.pH <- newportbeach.pH %>%
+  mutate(pH = sea_water_ph_reported_on_total_scale_salinity_corrected,
+         time = as.POSIXct(time, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"), date=as.Date(time)) %>%
+  filter(sea_water_ph_reported_on_total_scale_salinity_corrected_qc_agg %in% 1) %>% 
+  select(date, time, pH)
+
+filtered.newportbeach.pH <- filtered.newportbeach.pH %>%
+  arrange(time) %>% 
+  mutate(gap = c(0, diff(time) > hours(6)),  # Create a logical vector where TRUE indicates a gap
+         group = cumsum(gap))
+
+# Calculate 3-hour mean and confidence intervals
+six_hour_ph_stats <- filtered.newportbeach.pH %>%
+  mutate(SixHourInterval = floor_date(time, "6 hours")) %>%
+  group_by(group, SixHourInterval) %>%
+  summarise(
+    Mean = mean(pH, na.rm = TRUE),
+    SD = sd(pH, na.rm = TRUE),
+    N = n(),
+    SE = SD / sqrt(N),
+    Lower_95CI = Mean - qt(0.975, N - 1) * SE,
+    Upper_95CI = Mean + qt(0.975, N - 1) * SE
   ) %>%
-  mutate(date = as.Date(time))  # Extract date from 'time'
-# Calculate 12-hour mean and remove NA or NaN values
-twelve_hour_summary <- qc.newportbeach.pH %>%
-  mutate(hour = hour(time),
-         date = as.Date(time),
-         period = cut(hour, breaks = c(0, 12, 24), labels = c("12AM - 12PM", "12PM - 12AM"))) %>%
-  group_by(date, period) %>%
-  summarize(mean_sea_water_ph = mean(sea_water_ph_reported_on_total_scale_salinity_corrected, na.rm = TRUE)) %>%
-  na.omit() %>%
-  filter(!is.nan(mean_sea_water_ph))  # Remove NaN values
+  ungroup() %>%  # Ungroup for plotting
+  na.omit()  # Ensure no NAs remain
 
-# Calculate 12-hour mean and remove NA or NaN values
-twelve_hour_summary <- qc.newportbeach.pH %>%
-  mutate(hour = hour(time),
-         date = as.Date(time),
-         period = cut(hour, breaks = c(0, 12, 24), labels = c("12AM - 12PM", "12PM - 12AM"))) %>%
-  group_by(date, period) %>%
-  summarize(mean_sea_water_ph = mean(sea_water_ph_reported_on_total_scale_salinity_corrected, na.rm = TRUE)) %>%
-  na.omit() %>%
-  filter(!is.nan(mean_sea_water_ph))  # Remove NaN values
+# Calculate the overall mean pH
+overall_mean_ph <- mean(filtered.newportbeach.pH$pH, na.rm = TRUE)
+print(paste("Overall mean pH:", round(overall_mean_ph, 2)))
 
-# Plot the time series with scaled cyan color for 12-hour average
-pH_timeseries_plot <-ggplot(twelve_hour_summary, aes(x = date, y = mean_sea_water_ph, color = mean_sea_water_ph)) +
-  geom_line() +  # Keep the default line color
-  labs(title = "Mean Sea Water pH Semi-Daily 2022 to 2023",
-       subtitle=location_info ,
-       x = "Date",
-       y = "Mean Sea Water pH (total scale)",
-       color = "pH (total scale)") +  # Add color legend title
-  scale_y_continuous(limits = c(7.6, 8.6), breaks = seq(7.6, 8.6, 0.1)) +  # Adjust y-axis scale
-  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +  # Adjust x-axis date formatting
-  scale_color_gradient(low = "cyan3", high = "darkcyan") +  # Scale the color from dark to light cyan
+# pH plot with IQR lines and overall mean
+pH_timeseries <- ggplot(six_hour_ph_stats, aes(x = SixHourInterval, y = Mean, group=group)) +
+  geom_line(aes(color = Mean), size = 0.5) +
+  geom_hline(yintercept = overall_mean_ph, linetype = "dashed", color = "darkcyan", size = 0.5,
+             alpha=0.5) +
+  scale_color_gradient(low = "cyan3", high = "darkcyan", limits = c(7.6, 8.6), breaks = seq(7.6, 8.6, by = 0.2), name = "pH") +
+  scale_x_datetime(date_breaks = "1 year", date_labels = "%b %Y") +
+  scale_y_continuous(limits = c(7.6, 8.6), breaks = seq(7.6, 8.6, by = 0.2)) +
   theme_minimal() +
-  theme(
-    legend.position = "right",  # Legend on the right side
-    axis.text.x = element_text(size = 8),  # Adjust x-axis font size
-    axis.text.y = element_text(size = 8),  # Adjust y-axis font size
-    axis.title = element_text(size = 10, face = "bold"),  # Axis title size and weight
-    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),  # Centered main title
-    plot.subtitle = element_text(hjust = 0.5),  # Centered subtitle
-    legend.title = element_text(size = 10, face = "bold"),  # Legend title size and weight
-    legend.text = element_text(size = 8)  # Legend text size
-  )
+  theme(text = element_text(family = "Times New Roman"),
+        axis.title = element_text(size = 10, face = "bold"),
+        axis.text = element_text(size = 8),
+        legend.title = element_text(face = "bold")) +
+  labs(x = "Date", y = "Mean Sea Water pH", title = "", subtitle = "")
 
-# Calculate daily mean and remove NA or NaN values
-daily_summary <- qc.newportbeach.pH %>%
-  group_by(date) %>%
-  summarize(mean_sea_water_ph = mean(sea_water_ph_reported_on_total_scale_salinity_corrected, na.rm = TRUE)) %>%
-  na.omit() %>%
-  filter(!is.nan(mean_sea_water_ph))  # Remove NaN values
-
-# Plot the time series with scaled cyan color
-pH_timeseries_plot2 <- ggplot(daily_summary, aes(x = date, y = mean_sea_water_ph, color = mean_sea_water_ph)) +
-  geom_line() +  # Keep the default line color
-  labs(title = "Daily Mean Sea Water pH",
-       subtitle=location_info ,
-       x = "Date",
-       y = "Sea Water pH (total scale)") +
-  scale_y_continuous(limits = c(7.6, 8.6), breaks = seq(7.6, 8.6, 0.1)) +  # Adjust y-axis scale
-  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +  # Adjust x-axis date formatting
-  scale_color_gradient(low = "cyan3", high = "darkcyan") +  # Scale the color from dark to light cyan
-  theme_minimal() +
-  theme(
-    legend.position = "none",  # Remove legend
-    axis.text.x = element_text(size = 8),  # Adjust x-axis font size
-    axis.text.y = element_text(size = 8),  # Adjust y-axis font size
-    axis.title = element_text(size = 10, face = "bold"),  # Axis title size and weight
-    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),  # Centered main title
-    plot.subtitle = element_text(hjust = 0.5)  # Centered subtitle
-  )
-
-pH_timeseries_plot
-pH_timeseries_plot2 
-# Save the plot as a PNG file
-ggsave(filename = here::here("Images", "pH_timeseries_plot.png"), plot = pH_timeseries_plot, width = 10, height = 6)
-
+print(pH_timeseries)
 ```
 
 ```{r}
-# Filter data where TEMP_FLAG is either 0 or 5
-# 0 = good data, 5 = data from another source, 6= data from a different site, NaN = historical/missing data
-filtered_data <- newport.temp %>%
-  filter(TEMP_FLAG %in% c(NaN, 0, 5, 6)) %>% 
-  filter(SURF_TEMP_C >= 9 & SURF_TEMP_C <= 26)
+# Combine the plots vertically
+combined_timeseries <- temperature_timeseries / pH_timeseries 
+print(combined_timeseries)
 
-# Convert YEAR and MONTH to a date format
-filtered_data <- filtered_data  %>%
-  mutate(DATE = as.Date(paste(YEAR, MONTH, DAY), format = "%Y %m %d")) %>%  
-  select(DATE, YEAR, MONTH, DAY, SURF_TEMP_C)
-
-sst_data_1930_1940 <- filtered_data %>%
-  filter(YEAR >= 1930 & YEAR <= 1940) %>% 
-  select(DATE, SURF_TEMP_C)%>%
-  mutate(WEEK = week(DATE)) %>%
-  group_by(WEEK) %>%
-  summarize(AVG_SST = mean(SURF_TEMP_C, na.rm = TRUE),
-            STD_SST = sd(SURF_TEMP_C, na.rm = TRUE))
-
-sst_data_1940_1950 <- filtered_data %>%
-  filter(YEAR >= 1940 & YEAR <= 1950) %>% 
-  select(DATE, SURF_TEMP_C)%>%
-  mutate(WEEK = week(DATE)) %>%
-  group_by(WEEK) %>%
-  summarize(AVG_SST = mean(SURF_TEMP_C, na.rm = TRUE),
-            STD_SST = sd(SURF_TEMP_C, na.rm = TRUE))
-
-sst_data_1950_1960 <- filtered_data %>%
-  filter(YEAR >= 1950 & YEAR <= 1960) %>% 
-  select(DATE, SURF_TEMP_C)%>%
-  mutate(WEEK = week(DATE)) %>%
-  group_by(WEEK) %>%
-  summarize(AVG_SST = mean(SURF_TEMP_C, na.rm = TRUE),
-            STD_SST = sd(SURF_TEMP_C, na.rm = TRUE))
-
-sst_data_1960_1970 <- filtered_data %>%
-  filter(YEAR >= 1960 & YEAR <= 1970) %>% 
-  select(DATE, SURF_TEMP_C)%>%
-  mutate(WEEK = week(DATE)) %>%
-  group_by(WEEK) %>%
-  summarize(AVG_SST = mean(SURF_TEMP_C, na.rm = TRUE),
-            STD_SST = sd(SURF_TEMP_C, na.rm = TRUE))
-
-sst_data_1970_1980 <- filtered_data %>%
-  filter(YEAR >= 1970 & YEAR <= 1980) %>% 
-  select(DATE, SURF_TEMP_C)%>%
-  mutate(WEEK = week(DATE)) %>%
-  group_by(WEEK) %>%
-  summarize(AVG_SST = mean(SURF_TEMP_C, na.rm = TRUE),
-            STD_SST = sd(SURF_TEMP_C, na.rm = TRUE))
-
-sst_data_1980_1990 <- filtered_data %>%
-  filter(YEAR >= 1980 & YEAR <= 1990) %>% 
-  select(DATE, SURF_TEMP_C)%>%
-  mutate(WEEK = week(DATE)) %>%
-  group_by(WEEK) %>%
-  summarize(AVG_SST = mean(SURF_TEMP_C, na.rm = TRUE),
-            STD_SST = sd(SURF_TEMP_C, na.rm = TRUE))
-
-sst_data_1990_2000 <- filtered_data %>%
-  filter(YEAR >= 1990 & YEAR <= 2000) %>% 
-  select(DATE, SURF_TEMP_C)%>%
-  mutate(WEEK = week(DATE)) %>%
-  group_by(WEEK) %>%
-  summarize(AVG_SST = mean(SURF_TEMP_C, na.rm = TRUE),
-            STD_SST = sd(SURF_TEMP_C, na.rm = TRUE))
-
-sst_data_2000_2010 <- filtered_data %>%
-  filter(YEAR >= 2000 & YEAR <= 2010) %>% 
-  select(DATE, SURF_TEMP_C)%>%
-  mutate(WEEK = week(DATE)) %>%
-  group_by(WEEK) %>%
-  summarize(AVG_SST = mean(SURF_TEMP_C, na.rm = TRUE),
-            STD_SST = sd(SURF_TEMP_C, na.rm = TRUE))
-
-sst_data_2010_2020 <- filtered_data %>%
-  filter(YEAR >= 2010 & YEAR <= 2020) %>% 
-  select(DATE, SURF_TEMP_C)%>%
-  mutate(WEEK = week(DATE)) %>%
-  group_by(WEEK) %>%
-  summarize(AVG_SST = mean(SURF_TEMP_C, na.rm = TRUE),
-            STD_SST = sd(SURF_TEMP_C, na.rm = TRUE))
-
-ggplot() +
-  geom_line(data = sst_data_1930_1940, aes(x = WEEK, y = AVG_SST, color = "1930-1940"), size = 1) +
-  geom_errorbar(data = sst_data_1930_1940, aes(x = WEEK, ymin = AVG_SST - STD_SST, ymax = AVG_SST + STD_SST), width = 0.2, color = "red", size = 0.8) +
-  geom_line(data = sst_data_1940_1950, aes(x = WEEK, y = AVG_SST, color = "1940-1950"), size = 1) +
-  geom_errorbar(data = sst_data_1940_1950, aes(x = WEEK, ymin = AVG_SST - STD_SST, ymax = AVG_SST + STD_SST), width = 0.2, color = "orange", size = 0.8) +
-  geom_line(data = sst_data_1950_1960, aes(x = WEEK, y = AVG_SST, color = "1950-1960"), size = 1) +
-  geom_errorbar(data = sst_data_1950_1960, aes(x = WEEK, ymin = AVG_SST - STD_SST, ymax = AVG_SST + STD_SST), width = 0.2, color = "yellow", size = 0.8) +
-  geom_line(data = sst_data_1960_1970, aes(x = WEEK, y = AVG_SST, color = "1960-1970"), size = 1) +
-  geom_errorbar(data = sst_data_1960_1970, aes(x = WEEK, ymin = AVG_SST - STD_SST, ymax = AVG_SST + STD_SST), width = 0.2, color = "green", size = 0.8) +
-  geom_line(data = sst_data_1970_1980, aes(x = WEEK, y = AVG_SST, color = "1970-1980"), size = 1) +
-  geom_errorbar(data = sst_data_1970_1980, aes(x = WEEK, ymin = AVG_SST - STD_SST, ymax = AVG_SST + STD_SST), width = 0.2, color = "blue", size = 0.8) +
-  geom_line(data = sst_data_1980_1990, aes(x = WEEK, y = AVG_SST, color = "1980-1990"), size = 1) +
-  geom_errorbar(data = sst_data_1980_1990, aes(x = WEEK, ymin = AVG_SST - STD_SST, ymax = AVG_SST + STD_SST), width = 0.2, color = "purple", size = 0.8) +
-  geom_line(data = sst_data_1990_2000, aes(x = WEEK, y = AVG_SST, color = "1990-2000"), size = 1) +
-  geom_errorbar(data = sst_data_1990_2000, aes(x = WEEK, ymin = AVG_SST - STD_SST, ymax = AVG_SST + STD_SST), width = 0.2, color = "pink", size = 0.8) +
-  geom_line(data = sst_data_2000_2010, aes(x = WEEK, y = AVG_SST, color = "2000-2010"), size = 1) +
-  geom_errorbar(data = sst_data_2000_2010, aes(x = WEEK, ymin = AVG_SST - STD_SST, ymax = AVG_SST + STD_SST), width = 0.2, color = "brown", size = 0.8) +
-  geom_line(data = sst_data_2010_2020, aes(x = WEEK, y = AVG_SST, color = "2010-2020"), size = 1) +
-  geom_errorbar(data = sst_data_2010_2020, aes(x = WEEK, ymin = AVG_SST - STD_SST, ymax = AVG_SST + STD_SST), width = 0.2, color = "black", size = 0.8) +
-  labs(x = "Week of Year", y = "Mean Sea Surface Temperature (°C)", 
-       title = "Weekly Mean Sea Surface Temperature 1930-2020",  # Main title
-       subtitle = location_info) +  # Subtitle with location info
-  scale_color_manual(values = c("1930-1940" = "red", "1940-1950" = "orange", "1950-1960" = "yellow", "1960-1970" = "green", "1970-1980" = "blue", "1980-1990" = "purple", "1990-2000" = "pink", "2000-2010" = "brown", "2010-2020" = "black")) +
-  theme_minimal() +
-  theme(
-    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),  # Centered title
-    plot.subtitle = element_text(hjust = 0.5),  # Centered subtitle
-    axis.title = element_text(size = 12, face = "bold"),  # Axis title size and weight
-    axis.text = element_text(size = 12),  # Axis text size
-    legend.position = "right"  # Legend on the right side
-  )
-
+# Save the combined plot
+ggsave("stacked_timeseries.png", combined_timeseries, width = 8, height = 5, dpi = 1200)
 ```
-
-
 
 ```{r}
-# Load necessary libraries
-library(dplyr)
-library(lubridate)
-library(ggplot2)
-library(readr)
 
-# Reading the temperature data (adjust the path and column names as per your file)
-temp_data <- read.table(here::here("Data", "Site_Data", "IPTFXX_XXXITV2XMSR01_20220130.40.1"), header = TRUE)
+# Read the CSV file
+newport.temp <- read_csv(here("Data", "Site_Data", "NewportBeach_TEMP_1924-2023.csv"))
 
-# Combining the 'date' and 'time' columns into a single 'datetime' column
-temp_data <- temp_data %>%
-  mutate(datetime = as.POSIXct(paste(date, time), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")) %>%
-  select(-date, -time)  # Optionally, drop the original 'date' and 'time' columns
+# Filter data using TEMP_FLAG 
+# 0 = good data, 5 = data from another source, 6 = data from a different site
+# NaN is used to indicate historical/missing data
+filtered_temp_data <- newport.temp %>%
+  filter(is.na(TEMP_FLAG) | TEMP_FLAG %in% c(0, 5, 6)) %>%
+  filter(SURF_TEMP_C >= 9 & SURF_TEMP_C <= 26) %>%
+  mutate(DATE = as.Date(paste(YEAR, MONTH, DAY, sep = "-")))
 
-# Verify the conversion by checking the structure of the data frame
-str(temp_data)
+# Calculate monthly statistics 
+monthly_temp_stats <- filtered_temp_data %>%
+  mutate(YM = as.yearmon(DATE)) %>%
+  group_by(YM) %>%
+  summarise(
+    Mean = mean(SURF_TEMP_C, na.rm = TRUE),
+    SD = sd(SURF_TEMP_C, na.rm = TRUE),
+    Min = min(SURF_TEMP_C, na.rm = TRUE),
+    Max = max(SURF_TEMP_C, na.rm = TRUE),
+    N = n(),
+    SE = SD / sqrt(N),
+    Lower_95CI = Mean - qt(0.975, N - 1) * SE,
+    Upper_95CI = Mean + qt(0.975, N - 1) * SE) %>%
+  arrange(YM)
 
+# Convert 'YM' to a Date object outside ggplot
+monthly_temp_stats <- monthly_temp_stats %>%
+  mutate(Date = as.Date(as.yearmon(YM))) %>% 
+  arrange(YM)
 
-# Quality control based on flags: Excluding data with flags 1, 2, and 9
-# Assuming flag for bad data is in the 'flag' column
-temp_data <- temp_data %>%
-  filter(!grepl("1|2|9", flag))
+# Create a YearDecimal column from the Date
+monthly_temp_stats$YearDecimal <- year(monthly_temp_stats$Date) +
+                                  (yday(monthly_temp_stats$Date) - 1) / (ifelse(leap_year(year(monthly_temp_stats$Date)), 366, 365))
 
-# Read the tide data (you'll need to adjust according to your actual data)
-# For the sake of this example, let's assume you have a similar tide data file
-tide_data <- read_csv(here::here("Data", "Site_Data", "CO-OPS_9410660_met.csv"))
+# Fit a GLS model with an AR(3) correlation structure to the monthly data
+gls_model <- gls(Mean ~ YearDecimal, data = monthly_temp_stats,
+                 correlation = corARMA(p = 3), method = "ML")
 
-# Combining the 'Date' and 'Time (GMT)' columns into a single 'datetime' column
-# Note: You may need to adjust the format if your time doesn't include seconds
-tide_data <- tide_data %>%
-  mutate(datetime = as.POSIXct(paste(Date, format(`Time (GMT)`, format = "%H:%M:%S")), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")) %>%
-  select(-Date, -`Time (GMT)`)  # Drop the original 'Date' and 'Time (GMT)' columns
+# Extract coefficients for slope (change per year) and its standard error
+coeffs <- summary(gls_model)$tTable
+slope <- coeffs["YearDecimal", "Value"]
+slope_se <- coeffs["YearDecimal", "Std.Error"]
+decadal_change <- slope * 10  # Convert change per year to change per decade
+decadal_change_se <- slope_se * 10  # Standard error for decadal change
 
-# Check for missing values in 'Verified (m)'
-summary(tide_data$`Verified (m)`)
+# p-value for the slope
+slope_pval <- coeffs["YearDecimal", "p-value"]
 
-# If 'Verified (m)' has too many missing values, consider using 'Predicted (m)'
-# For now, let's try recalculating the threshold excluding NAs
-high_tide_threshold <- quantile(tide_data$`Verified (m)`, 0.75, na.rm = TRUE)
-low_tide_threshold <- quantile(tide_data$`Verified (m)`, 0.25, na.rm = TRUE)
-
-
-# Check the calculated thresholds
-high_tide_threshold
-low_tide_threshold
-
-# For now, we proceed with the categorization based on quartiles as an approximation
-if (!is.na(high_tide_threshold) && !is.na(low_tide_threshold)) {
-  tide_data$tide_category <- ifelse(tide_data$`Verified (m)` >= high_tide_threshold, 'High',
-                                     ifelse(tide_data$`Verified (m)` <= low_tide_threshold, 'Low', 'Mid'))
-} else {
-  cat("Threshold calculation failed. Please verify the data for missing values or inconsistencies.")
-}
-
-
-# Joining temperature data with tide categories
-temp_data <- temp_data %>%
-  left_join(tide_data %>% select(datetime, tide_category), by = "datetime")
-
-# Separate temperature data into likely air and water temperatures based on tide categories
-air_temperatures <- temp_data %>% 
-  filter(tide_category == 'Low') %>%
-  select(datetime, tempc)
-
-water_temperatures <- temp_data %>% 
-  filter(tide_category == 'High') %>%
-  select(datetime, tempc)
-
-# Plotting the data
-ggplot(air_temperatures, aes(x = datetime, y = tempc)) +
-  geom_line(color = "blue") +
-  labs(title = "Air Temperatures Over Time", x = "Datetime", y = "Temperature (°C)")
-
-ggplot(water_temperatures, aes(x = datetime, y = tempc)) +
-  geom_line(color = "green") +
-  labs(title = "Water Temperatures Over Time", x = "Datetime", y = "Temperature (°C)")
-
-# Generating basic statistics for air and water temperatures
-air_stats <- summary(air_temperatures$tempc)
-water_stats <- summary(water_temperatures$tempc)
-
-print("Air Temperature Statistics")
-print(air_stats)
-
-print("Water Temperature Statistics")
-print(water_stats)
+#print the slope, standard error, and p-value
+print(paste("Slope:", round(slope, 4)))
+print(paste("Standard Error:", round(slope_se, 4)))
+print(paste("Decadal Change:", round(decadal_change, 4)))
+print(paste("Standard Error for Decadal Change:", round(decadal_change_se, 4)))
+print(paste("P-value for Slope:", round(slope_pval, 4)))
 ```
+
+# SST Climatological Monthly Means and Standard Deviations
+
+```{r}
+
+# Read the CSV file
+newport.temp <- read_csv(here("Data", "Site_Data", "NewportBeach_TEMP_1924-2023.csv"))
+
+# Filter data using TEMP_FLAG 
+# 0 = good data, 5 = data from another source, 6 = data from a different site
+# NaN is used to indicate historical/missing data
+filtered_temp_data <- newport.temp %>%
+  filter(is.na(TEMP_FLAG) | TEMP_FLAG %in% c(0, 5, 6)) %>%
+  filter(SURF_TEMP_C >= 9 & SURF_TEMP_C <= 26) %>%
+  mutate(DATE = as.Date(paste(YEAR, MONTH, DAY, sep = "-")))
+
+# Calculate monthly statistics 
+monthly_temp_stats <- filtered_temp_data %>%
+  mutate(YM = as.yearmon(DATE)) %>%
+  group_by(YM) %>%
+  summarise(
+    Mean = mean(SURF_TEMP_C, na.rm = TRUE),
+    SD = sd(SURF_TEMP_C, na.rm = TRUE),
+    Min = min(SURF_TEMP_C, na.rm = TRUE),
+    Max = max(SURF_TEMP_C, na.rm = TRUE),
+    N = n(),
+    SE = SD / sqrt(N),
+    Lower_95CI = Mean - qt(0.975, N - 1) * SE,
+    Upper_95CI = Mean + qt(0.975, N - 1) * SE) %>%
+  arrange(YM)
+
+# Assuming 'monthly_temp_stats' has a 'Date' column
+monthly_temp_stats <- monthly_temp_stats %>%
+  mutate(
+    Month = month(Date, label = TRUE, abbr = TRUE),  # Extract month with abbreviation
+    Decade = floor(year(Date) / 10) * 10  # Calculate the decade
+  )
+
+# Calculate the average temperature and its standard error for each month in each decade
+avg_temp_by_month_decade <- monthly_temp_stats %>%
+  group_by(Month, Decade) %>%
+  summarise(
+    AvgTemp = mean(Mean, na.rm = TRUE),
+    StdErr = sd(Mean, na.rm = TRUE) / sqrt(n())
+  ) %>%
+  ungroup()
+
+# Ensure 'Month' is an ordered factor
+avg_temp_by_month_decade$Month <- factor(avg_temp_by_month_decade$Month, levels = month.abb)
+
+# Generate a heat color palette with 12 colors
+palette_heat <- rev(palette_heat)
+
+# Display the generated color palette
+palette_heat
+
+p3 <- ggplot(avg_temp_by_month_decade, aes(x = Month, y = AvgTemp, color = as.factor(Decade), group = Decade)) +
+  geom_line() +
+  geom_point() +
+  geom_errorbar(aes(ymin = AvgTemp - StdErr, ymax = AvgTemp + StdErr), width = 0.2) +  # Adding error bars
+  scale_color_manual(values = palette_heat, name="Decade") +  # Use manual scale for custom color palette
+  theme_minimal() +
+  theme(axis.text.x = element_text(hjust = 1),
+        text = element_text(family = "Times New Roman"),
+        axis.title.x = element_text(size = 12, face = "bold"),
+        axis.title.y = element_text(size = 12, face = "bold"),
+        legend.title = element_text(face = "bold", size = 12)) +
+  labs(y = "Average Monthly SST (°C)", x="Month")
+
+print(p3)
+```
+
 
 # Intertidal SST logger PISCO (Point Fermin, Los Angeles, CA)
 
@@ -481,7 +495,162 @@ Multi-Agency Rocky Intertidal Network (MARINe), Partnership Interdisciplinary St
 
 ```{r}
 
-# Assuming your data frame is named 'data', replace it with your actual data frame name
+# Reading the temperature data (adjust the path and column names as per your file)
+temp_data <- read.table(here::here("Data", "Site_Data", "Long_Beach_Intertidal_SST_Temp_2022"), header = TRUE)
+
+temp_data <- temp_data %>%
+  mutate(datetime = as.POSIXct(paste(date, time), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")) %>%
+  select(-date, -time) %>%
+  filter(!grepl("1|2|9", flag))
+
+# Read the tide data (and the tide data at high and low tides in order to begin labeling tide fluctuations, California is a semi diurnal tide with tides lasting approx 6 hours and 12.5 minutes)
+hourly_tide_data<- read_csv(here::here("Data", "Site_Data", "Long_Beach_CA_Hourly_Tides.csv"))
+hourly_tide_data <- hourly_tide_data %>%
+  mutate(datetime = as.POSIXct(paste(Date, format(`Time (GMT)`, format = "%H:%M:%S")), format = "%Y-%m-%d %H:%M:%S", tz = "UTC")) %>% # Drop the original 'Date' and 'Time (GMT)' columns
+  select(datetime, Predicted = `Predicted (m)`, Verified = `Verified (m)`) 
+
+# Filter the hourly tide data to match the temperature data range
+hourly_tide_data_filtered <- hourly_tide_data %>%
+  filter(datetime >= min(temp_data$datetime) & datetime <= max(temp_data$datetime))
+
+# Label the hourly tide data as high or low based on Verified values
+hourly_tide_data <- hourly_tide_data %>%
+  mutate(Tide = ifelse(Verified > 0, 'High', 'Low'))
+
+joined_data <- temp_data %>%
+  left_join(hourly_tide_data, by = "datetime") %>%
+  mutate(Verified = zoo::na.approx(Verified, na.rm = FALSE)) %>%
+  mutate(Tide = ifelse(Verified > 0, 'High', 'Low')) %>%
+  select(-Predicted, -flag, datetime, tempc, Tide, -Verified) %>%
+  mutate(Tide = if_else(row_number() <= 3, "Low", Tide))
+
+# Determine day and night periods
+joined_data <- joined_data %>%
+  mutate(day = getSunlightTimes(as.Date(datetime), lat = 33.705, lon = -118.293, tz = "UTC")$sunrise < datetime & 
+            datetime < getSunlightTimes(as.Date(datetime), lat = 33.705, lon = -118.293, tz = "UTC")$sunset) %>%
+  mutate(time_of_day = ifelse(day, "Day", "Night")) %>%
+  select(-day, -yearday)
+
+# Generate summary statistics for each condition
+
+# Separate temperature data into likely air and water temperatures based on tide categories
+air_temperatures <- joined_data %>% 
+  filter(Tide == 'Low') %>%
+  select(datetime, tempc)
+
+water_temperatures <- joined_data %>% 
+  filter(Tide == 'High') %>%
+  select(datetime, tempc)
+
+# Generating basic statistics for air and water temperatures
+air_stats <- summary(air_temperatures$tempc)
+water_stats <- summary(water_temperatures$tempc)
+
+# Separate temperature data into day and night temperatures
+day_temperatures <- joined_data %>%
+  filter(time_of_day == "Day")
+
+night_temperatures <- joined_data %>%
+  filter(time_of_day == "Night")
+
+# Calculate statistics for day and night temperatures
+day_stats <- summary(day_temperatures$tempc)
+night_stats <- summary(night_temperatures$tempc)
+
+# Day High Tide
+day_high_stats <- joined_data %>%
+  filter(time_of_day == "Day", Tide == "High") %>%
+  summarise(Mean = mean(tempc, na.rm = TRUE), Max = max(tempc, na.rm = TRUE), Min = min(tempc, na.rm = TRUE))
+
+# Day Low Tide
+day_low_stats <- joined_data %>%
+  filter(time_of_day == "Day", Tide == "Low") %>%
+  summarise(Mean = mean(tempc, na.rm = TRUE), Max = max(tempc, na.rm = TRUE), Min = min(tempc, na.rm = TRUE))
+
+# Night High Tide
+night_high_stats <- joined_data %>%
+  filter(time_of_day == "Night", Tide == "High") %>%
+  summarise(Mean = mean(tempc, na.rm = TRUE), Max = max(tempc, na.rm = TRUE), Min = min(tempc, na.rm = TRUE))
+
+# Night Low Tide
+night_low_stats <- joined_data %>%
+  filter(time_of_day == "Night", Tide == "Low") %>%
+  summarise(Mean = mean(tempc, na.rm = TRUE), Max = max(tempc, na.rm = TRUE), Min = min(tempc, na.rm = TRUE))
+
+# Print statistics
+print("Day High Tide Stats")
+print(day_high_stats)
+
+print("Day Low Tide Stats")
+print(day_low_stats)
+
+print("Night High Tide Stats")
+print(night_high_stats)
+
+print("Night Low Tide Stats")
+print(night_low_stats)
+
+print("Air Temperature Statistics")
+print(air_stats)
+
+print("Water Temperature Statistics")
+print(water_stats)
+
+print("Day Temperature Statistics")
+print(day_stats)
+
+print("Night Temperature Statistics")
+print(day_stats)
+
+# Plotting the data
+ggplot(air_temperatures, aes(x = datetime, y = tempc)) +
+  geom_line(color = "darkgreen") +
+  labs(title = "Air Temperatures Over Time", x = "Datetime", y = "Temperature (°C)")
+
+ggplot(water_temperatures, aes(x = datetime, y = tempc)) +
+  geom_line(color = "cyan2") +
+  labs(title = "Water Temperatures Over Time", x = "Datetime", y = "Temperature (°C)")
+
+
+ggplot(joined_data %>% filter(time_of_day == "Day"), aes(x = datetime, y = tempc, group = Tide)) +
+  geom_line(aes(color = Tide), na.rm = FALSE) +  # Keeping NA values
+  labs(title = "Daytime Temperatures with Tide Information", x = "Datetime", y = "Temperature (°C)") +
+  scale_color_manual(values = c("High" = "cyan2", "Low" = "darkgreen")) +
+  theme_minimal()
+
+ggplot(joined_data %>% filter(time_of_day == "Night"), aes(x = datetime, y = tempc, group = Tide)) +
+  geom_line(aes(color = Tide), na.rm = FALSE) +
+  labs(title = "Nighttime Temperatures with Tide Information", x = "Datetime", y = "Temperature (°C)") +
+  scale_color_manual(values = c("High" = "cyan2", "Low" = "darkgreen")) +
+  theme_minimal()
+
+# Assuming 'datetime' is your timestamp column
+# Filter data for August and September
+aug_sep_data <- joined_data %>%
+  filter(month(datetime) %in% c(8, 9))
+
+# Calculate average air and water temperatures for August and September
+avg_air_temp <- aug_sep_data %>%
+  filter(Tide == 'Low') %>%
+  summarise(avg_air_temp = mean(tempc, na.rm = TRUE), Max = max(tempc, na.rm = TRUE), Min = min(tempc, na.rm = TRUE))
+
+avg_water_temp <- aug_sep_data %>%
+  filter(Tide == 'High') %>%
+  summarise(avg_water_temp = mean(tempc, na.rm = TRUE), Max = max(tempc, na.rm = TRUE), Min = min(tempc, na.rm = TRUE))
+
+# Print average temperatures
+print("Average Air Temperature for August and September:")
+print(avg_air_temp)
+
+print("Average Water Temperature for August and September:")
+print(avg_water_temp)
+
+
+```
+
+```{r}
+
+# Reading in data
 file_path <- here::here("Data", "Site_Data", "PISCO_Point_Fermin_Temp_2022")
 data <- read.table(file_path, header = TRUE)
 
@@ -536,7 +705,7 @@ ggsave(filename = here::here("Images", "intertidal_timeseries_plot.png"), plot =
 ```
 
 ```{r}
-# Assuming your data frame is named 'data', replace it with your actual data frame name
+
 experiment_months_data <- data %>%
   filter(date >= "2022-08-01" & date <= "2022-09-30") %>%
   mutate(datetime = as.POSIXct(paste(date, time), format = "%Y-%m-%d %H:%M:%S"),
@@ -571,397 +740,4 @@ ggsave(filename = here::here("Images", "experiment_pH_timeseries_plot.png"), plo
 
 
 
-# Summary Statistics (Hourly) and Sunrise/Sunset Times
-
-```{r}
-# Load required libraries
-library(suncalc)
-library(lubridate)
-
-# Define latitude and longitude for Point Fermin, California
-latitude <- 33.70679092
-longitude <- -118.28599
-
-# Function to calculate sunrise and sunset times in West Coast time
-calculate_sun_times <- function(date) {
-  # Convert date to Date class object
-  date <- as.Date(date)
-  
-  # Calculate sunrise and sunset times
-  sun_times <- getSunlightTimes(date, lon = longitude, lat = latitude)
-  
-  # Convert UTC times to West Coast time (Pacific Time Zone)
-  sun_times$sunrise <- with_tz(as.POSIXct(sun_times$sunrise, tz = "UTC"), "America/Los_Angeles")
-  sun_times$sunset <- with_tz(as.POSIXct(sun_times$sunset, tz = "UTC"), "America/Los_Angeles")
-  
-  # Return sunrise and sunset times in West Coast time
-  return(sun_times)
-}
-
-# Add columns for sunrise and sunset times
-time_temp_data <- cleaned_data %>%
-  rowwise() %>%
-  mutate(sun_times = list(calculate_sun_times(date))) %>%
-  mutate(sunrise = sun_times$sunrise, sunset = sun_times$sunset) %>%
-  ungroup() %>%
-  select(-sun_times)  # Remove the temporary sun_times column
-
-# Function to determine if it's day or night based on datetime, sunrise, and sunset times
-day_or_night <- function(datetime, sunrise, sunset) {
-  ifelse(datetime >= sunrise & datetime < sunset, "Day", "Night")
-}
-
-# Add a column indicating whether it's day or night
-time_temp_data <- time_temp_data %>%
-  mutate(day_or_night = day_or_night(datetime, sunrise, sunset))
-
-# Print the first few rows of the updated data frame
-view(time_temp_data)
-
-```
-
-
-```{r}
-# findng mean between day and night by date
-day_night_summary_date <- time_temp_data %>%
-  group_by(day_or_night, date) %>%
-  summarize(
-    mean_tempc = mean(tempc, na.rm = TRUE),
-    median_tempc = median(tempc, na.rm = TRUE),
-    min_tempc = min(tempc, na.rm = TRUE),
-    max_tempc = max(tempc, na.rm = TRUE),
-    sd_tempc = sd(tempc, na.rm = TRUE)
-  )
-
-sorted_day_night_summary_date <- day_night_summary_date %>%
-  arrange(date, day_or_night)
-
-# findng mean between day and night by date
-day_night_summary_date <- time_temp_data %>%
-  group_by(day_or_night) %>%
-  summarize(
-    mean_tempc = mean(tempc, na.rm = TRUE),
-    median_tempc = median(tempc, na.rm = TRUE),
-    min_tempc = min(tempc, na.rm = TRUE),
-    max_tempc = max(tempc, na.rm = TRUE),
-    sd_tempc = sd(tempc, na.rm = TRUE)
-  )
-```
-
-```{r}
-# Calculate month from date
-time_temp_data <- time_temp_data %>%
-  mutate(month = format(datetime, "%Y-%m"))
-
-# Calculate monthly average between day and night temperatures
-day_night_summary_month <- time_temp_data %>%
-  group_by(day_or_night, month) %>%
-  summarize(
-    mean_tempc = mean(tempc, na.rm = TRUE),
-    median_tempc = median(tempc, na.rm = TRUE),
-    min_tempc = min(tempc, na.rm = TRUE),
-    max_tempc = max(tempc, na.rm = TRUE),
-    sd_tempc = sd(tempc, na.rm = TRUE)
-  )
-
-# Arrange the summary data
-sorted_day_night_summary_month <- day_night_summary_month %>%
-  arrange(month, day_or_night)
-
-# Convert month to factor with correct levels
-sorted_day_night_summary_month$month <- factor(sorted_day_night_summary_month$month, levels = c("2022-01", "2022-02", "2022-03", "2022-04", "2022-05", "2022-06", "2022-07", "2022-08", "2022-09", "2022-10", "2022-11"))
-
-# Define shape mapping
-shape_mapping <- c("Day" = 0, "Night" = 25)
-
-# Filter out the month of January
-filtered_data <- sorted_day_night_summary_month %>%
-  filter(month != "2022-01")
-
-# Plot the data with adjusted colors and shapes
-ggplot(filtered_data, aes(x = month, y = mean_tempc, shape = day_or_night, color = day_or_night)) +
-  geom_point(position = position_dodge(width = 0.5), size = 4) +  # Add dodge to the points
-  geom_errorbar(aes(ymin = min_tempc, ymax = max_tempc), 
-                width = 0.2, 
-                position = position_dodge(width = 0.5)) +  # Error bars with dodge
-  scale_color_manual(values = c("Day" = "#FFD700", "Night" = "#00008B")) +  # Adjusted colors
-  scale_shape_manual(values = shape_mapping) +  # Map shapes
-  labs(title = "Monthly Average Temperature with Day/Night Variation",
-       x = "Month",
-       y = "Mean Temperature (°C)") +
-  theme_minimal() +  # Minimal theme
-  theme(legend.position = "none")  # Remove legend
-```
-
-
-
-```{r}
-# Analysis of Tidal Datasets package
-library(VulnToolkit)
-# HL: Extracts high and low tides from a record of water levels
-
-# Specify the date range in the correct format (YYYYMMDD)
-begindate <- "20220131"
-enddate <- "20221106"
-
-# Specify the station ID (Long Beach, CA)
-station <- "9410660"
-
-# Call the noaa() function with the correct parameters
-tide_data <- noaa(begindate = begindate, enddate = enddate, datum="MLLW", station = station, interval = "hourly", continuous=TRUE)
-
-# Call the noaa() function with the correct parameters
-tide_data_min <- noaa(begindate = begindate, enddate = enddate, datum="MLLW", station = station, interval = "6 minute", continuous=TRUE)
-
-tide_data <- tide_data %>% 
-  mutate(datetime = time_GMT,
-         water_level=`verified water level at 9410660 (meters rel. to MLLW)`) %>% 
-  select(datetime, water_level)
-
-tides <- HL(level = tide_data[, 2], time = tide_data[, 1], semidiurnal=TRUE)
-
-#hourly labels
-tide_labels <- tides %>% 
-  mutate(datetime = time) %>% 
-  select(datetime, tide)
-
-tide_labels <- as.data.frame(tide_labels)
-
-tide_time_temp <- left_join(time_temp_data, tide_labels) %>% 
-  select(datetime, day_or_night, tempc, tide) %>% 
-  filter(!is.na(tide))
-
-# Assuming your data frame is named 'data', replace it with your actual data frame name
-mean_by_tide <- tide_time_temp %>%
-  group_by(tide) %>%
-  summarize(mean_tempc = mean(tempc, na.rm = TRUE))
-
-# Assuming your data frame is named 'data', replace it with your actual data frame name
-mean_by_tide_time <- tide_time_temp %>%
-  group_by(tide, day_or_night) %>%
-  summarize(mean_tempc = mean(tempc, na.rm = TRUE))
-
-mean_by_tide_time
-mean_by_tide
-
-```
-```{r}
-# Read data and preprocess
-newportbeach.pH <- read_csv(here("Data", "Site_Data", "newport-pier-automated-shore-station_pH_06-2022-06-2023.csv"))[-1,]
-newportbeach.pH <- newportbeach.pH %>% 
-  mutate(time=ymd_hms(time)) %>% 
-  select(time, sea_water_ph_reported_on_total_scale_salinity_corrected, sea_water_ph_reported_on_total_scale_salinity_corrected_qc_agg)
-
-# Filter data based on QC and pH range
-qc.newportbeach.pH <- newportbeach.pH %>%
-  filter(
-    sea_water_ph_reported_on_total_scale_salinity_corrected_qc_agg %in% c(1, 2) &
-    sea_water_ph_reported_on_total_scale_salinity_corrected >= 7.03 &
-    sea_water_ph_reported_on_total_scale_salinity_corrected <= 8.66
-  ) %>%
-  mutate(date = as.Date(time))  # Extract date from 'time'
-
-# Calculate daily mean and remove NA or NaN values
-daily_summary <- qc.newportbeach.pH %>%
-  group_by(date) %>%
-  summarize(mean_sea_water_ph = mean(sea_water_ph_reported_on_total_scale_salinity_corrected, na.rm = TRUE)) %>%
-  na.omit() %>%
-  filter(!is.nan(mean_sea_water_ph))  # Remove NaN values
-
-# Plot the time series
-ggplot(daily_summary, aes(x = date, y = mean_sea_water_ph)) +
-  geom_line() +
-  labs(title = "Daily Mean Sea Water pH",
-       x = "Date",
-       y = "Mean Sea Water pH") +
-  theme_minimal()
-
-
-# Read data and preprocess
-newportbeach.pH <- read_csv(here("Data", "Site_Data", "newport-pier-automated-shore-station_pH_06-2022-06-2023.csv"))[-1,]
-newportbeach.pH <- newportbeach.pH %>% 
-  mutate(time=ymd_hms(time)) %>% 
-  select(time, sea_water_ph_reported_on_total_scale_salinity_corrected, sea_water_ph_reported_on_total_scale_salinity_corrected_qc_agg)
-
-# Filter data based on QC and pH range
-qc.newportbeach.pH <- newportbeach.pH %>%
-  filter(
-    sea_water_ph_reported_on_total_scale_salinity_corrected_qc_agg %in% c(1, 2) &
-    sea_water_ph_reported_on_total_scale_salinity_corrected >= 7.03 &
-    sea_water_ph_reported_on_total_scale_salinity_corrected <= 8.66
-  ) %>%
-  mutate(datetime = as.POSIXct(time),  # Convert 'time' to POSIXct format
-         date = as.Date(time))  # Extract date from 'time'
-
-# Calculate mean pH for every 12 hours
-twelve_hour_summary <- qc.newportbeach.pH %>%
-  mutate(hour = as.numeric(format(datetime, "%H")),  # Extract hour from 'datetime'
-         period = cut(hour, breaks = c(0, 12, 24), labels = c("12AM - 12PM", "12PM - 12AM"))) %>%
-  group_by(date, period) %>%
-  summarize(mean_sea_water_ph = mean(sea_water_ph_reported_on_total_scale_salinity_corrected, na.rm = TRUE)) %>%
-  na.omit() %>%
-  filter(!is.nan(mean_sea_water_ph))  # Remove NaN values
-
-# Plot the time series
-ggplot(twelve_hour_summary, aes(x = date, y = mean_sea_water_ph)) +
-  geom_line() +
-  labs(title = "Mean Sea Water pH Every 12 Hours",
-       x = "Date",
-       y = "Mean Sea Water pH",
-       color = "Time Period") +
-  theme_minimal()
-
-
-
-
-# Read data and preprocess
-newportbeach.pH <- read_csv(here("Data", "Site_Data", "newport-pier-automated-shore-station_pH_06-2022-06-2023.csv"))[-1,]
-newportbeach.pH <- newportbeach.pH %>% 
-  mutate(time=ymd_hms(time)) %>% 
-  select(time, sea_water_ph_reported_on_total_scale_salinity_corrected, sea_water_ph_reported_on_total_scale_salinity_corrected_qc_agg)
-
-# Filter data based on QC and pH range
-qc.newportbeach.pH <- newportbeach.pH %>%
-  filter(
-    sea_water_ph_reported_on_total_scale_salinity_corrected_qc_agg %in% c(1, 2) &
-    sea_water_ph_reported_on_total_scale_salinity_corrected >= 7.03 &
-    sea_water_ph_reported_on_total_scale_salinity_corrected <= 8.66
-  ) %>%
-  mutate(time = as.POSIXct(time, format = "%Y-%m-%d %H:%M:%S")) # Convert 'time' to POSIXct format
-
-# Calculate hourly mean and remove NA or NaN values
-hourly_summary <- qc.newportbeach.pH %>%
-  mutate(hour = hour(time),
-         date = as.Date(time)) %>%
-  group_by(hour, date) %>%
-  summarize(mean_sea_water_ph = mean(sea_water_ph_reported_on_total_scale_salinity_corrected, na.rm = TRUE)) %>%
-  mutate(datetime = as.POSIXct(paste(date, hour, sep = " "), format = "%Y-%m-%d %H")) %>%
-  select(-hour, -date) %>%   # Remove the separate date and hour columns
-  na.omit() %>%
-  filter(!is.nan(mean_sea_water_ph))  # Remove NaN values
-
-# Filter data starting from 06-23
-hourly_summary <- hourly_summary %>%
-  filter(datetime >= as.POSIXct("2022-06-23"))
-
-# Plot the time series
-ggplot(hourly_summary, aes(x = datetime, y = mean_sea_water_ph)) +
-  geom_line() +
-  labs(title = "Hourly Mean Sea Water pH",
-       x = "Date and Time",
-       y = "Mean Sea Water pH") +
-  theme_minimal()
-
-```
-
-
-
-```{r}
-
-study.date.temp <- read_csv(here("Data", "Site_Data", "newport-pier-automated-station-study-site-sst-jul-26-2022-aug-16-2022.csv"))[-1,]
-
-study.date.temp <- study.date.temp %>% 
-  mutate(time=ymd_hms(time))
-
-
-# Define the target date (August 16, 2022)
-target_date <- as.Date("2022-08-16")
-
-# Calculate the start date (3 weeks prior to the target date)
-start_date <- target_date - lubridate::weeks(2)
-
-# Filter the data for the specified date range
-study_date_data <- study.date.temp %>%
-  filter(time >= start_date & time < target_date)
-
-# Filter out NA and 0 values in sea_water_temperature column
-study_date_data <- study_date_data %>%
-  mutate(sea_water_temperature = as.numeric(sea_water_temperature)) %>% 
-  filter(!is.na(sea_water_temperature) & sea_water_temperature != 0)
-
-# Calculate the mean sea_water_temperature and count (N)
-mean_temp <- mean(study_date_data$sea_water_temperature, na.rm = TRUE)
-sd_temp <- sd(study_date_data$sea_water_temperature, na.rm = TRUE)
-count_temp <- nrow(study_date_data)
-  
-cat("Mean Sea Water Temperature:", mean_temp, "\n")
-cat("Standard Deviation:", sd_temp, "\n")
-cat("N:", count_temp, "\n")
-
-```
-
-
-```{r}
-
-newport.salt <- read_csv(here("Data", "Site_Data", "NewportBeach_SALT_1924-2023.csv"), skip=44)
-
-# Filter data where TEMP_FLAG is either NaN or 1
-filtered_data <- newport.salt %>%
-  filter(SALT_FLAG == 0)
-
-# Convert YEAR and MONTH to a date format
-filtered_data <- filtered_data %>%
-  mutate(DATE = ymd(paste(YEAR, MONTH, DAY))) %>% 
-  select(DATE, SALINITY_PSU, SALT_FLAG)
-
-ggplot(data = filtered_data) +
-  geom_line(aes(x = DATE, y = SALINITY_PSU), color = "yellow2") +
-  labs(x = "Date", y = "Seawater Salinity (PSU)", title = "Time Series of Salinity") +
-  theme_minimal()
-  
-```
-
-pH Data from Newport Beach Pier Automated Shore Station
-
-```{r}
-
-# Read the "newport.pH" dataset
-newport.pH <- read_csv(here("Data", "Site_Data", "NewportBeach_PH_2018-2023.csv"))
-
-# Remove the first row of data and select for pH corrected data
-newport.pH <- newport.pH[-1, ] %>% 
-  mutate(pH = sea_water_ph_reported_on_total_scale_salinity_corrected) %>% 
-  select(time, pH)
-
-# Convert the "Time" column to POSIXct
-newport.pH <- newport.pH %>%
-  mutate(Time = ymd_hms(time)) %>% 
-  select(Time, pH)
-
-# Create a time series plot using ggplot
-ggplot(data = newport.pH) +
-  geom_line(aes(x = Time, y = pH), color = "blue") +
-  labs(x = "Time", y = "pH", title = "Time Series of pH") +
-  theme_minimal()
-
-
-```
-
-
-```{r}
-# Newport Beach pH Binned Weekly Summary
-
-
-# Read the CSV file 
-weekly_pH_data <- read_csv(here("Data", "Site_Data", "NewportBeach_PH_2018-2023_pH_Binned_weeks.csv"))
-
-# Create a ggplot visualization
-ggplot(weekly_pH_data, aes(x = `Start date`, y = Mean)) +
-  geom_line(color = "blue", size = 1) +
-  geom_errorbar(aes(ymin = Min, ymax = Max), width = 0.2, color = "red") +
-  labs(x = "Week", y = "pH", title = "Weekly pH Data") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
-```
-
-
-
-```{r}
-
-mean_pH_Data <- weekly_pH_data %>% 
-  select(Mean) %>% 
-  summarise(mean_pH=mean(as.numeric(Mean), na.rm=TRUE))
-
-print(mean_pH_Data)
-```
 
