@@ -393,7 +393,9 @@ summary_data <- mesocosm.data %>%
     Mean_DIC = mean(DIC, na.rm = TRUE),
     SD_DIC = sd(DIC, na.rm = TRUE) / sqrt(n())
     
-) %>% 
+) 
+
+summary_table <- summary_data %>% 
   mutate(
     # Format columns as mean +- sd
     Mean_Temp_C = paste(round(Mean_Temp_C, 2), "±", round(SD_Temp_C, 2)),
@@ -406,16 +408,19 @@ summary_data <- mesocosm.data %>%
     Mean_HCO3 = paste(round(Mean_HCO3, 2), "±", round(SD_HCO3, 2)),
     Mean_CO3 = paste(round(Mean_CO3, 2), "±", round(SD_CO3, 2)),
     Mean_DIC = paste(round(Mean_DIC, 2), "±", round(SD_DIC, 2))
-  ) %>%
-  select(-SD_Temp_C, -SD_pH, -SD_Salinity, -SD_DO_Percent, -SD_DO_mgL, -Mean_DO_mgL, -SD_Conductivity, -SD_TA, -SD_pCO2, -SD_HCO3, -SD_CO3, -SD_DIC) %>%
+  ) 
+
+summary_table <- summary_table %>%
+  select(-SD_Temp_C, -SD_pH, -SD_Salinity, -SD_DO_Percent, -SD_DO_mgL, -SD_Conductivity, -SD_TA, -SD_pCO2, -SD_HCO3, -SD_CO3, -SD_DIC) %>%
   arrange(pH_Treatment, Temp_Treatment)
 
 # Rename columns to include units in labels
-summary_table <- rename(summary_data,
+summary_table <- rename(summary_table,
   `Mean Temp (°C)` = Mean_Temp_C,
   `Mean pH` = Mean_pH,
   `Mean Salinity (ppt)` = Mean_Salinity,
   `Mean DO Percent (%)` = Mean_DO_Percent,
+  `Mean DO (mg/L)` = Mean_DO_mgL,
   `Mean Conductivity (µS/cm)` = Mean_Conductivity,
   `Mean TA (µmol/kg)` = Mean_TA,
   `Mean pCO2 (atm)` = Mean_pCO2,
@@ -525,6 +530,7 @@ mesocosm_plot_conductivity <- ggplot(summary_data, aes(x = factor(Temp_Treatment
   theme_minimal() +
   theme(plot.title = element_text(hjust = 0.5, face = "bold"))  # Center and bold the title
 
+
 # Create a plot with standard error bars for Mean_Temp_C
 mesocosm_plot_temp <- ggplot(summary_data, aes(x = factor(Temp_Treatment), y = Mean_Temp_C, color = factor(pH_Treatment))) +
   geom_point(position = position_dodge(0.75), size = 2) +
@@ -601,6 +607,116 @@ ggsave(here("Output/mesocosm_mean_pH_plot.png"), mesocosm_mean_pH_plot, width = 
 
 ```{r}
 
+pH_Temp_data <- summary_data %>%
+  filter(pH_Treatment != "Sump") %>% 
+  select(pH_Treatment, Temp_Treatment, Mean_Temp_C, SD_Temp_C, Mean_pH, SD_pH) %>%
+  na.omit()
+
+# Calculate the overall mean pH
+low_mean_pH <- mesocosm.data %>% 
+  filter(pH_Treatment == "Low") %>%
+  dplyr::summarize(Mean_pH = mean(pH, na.rm = TRUE),
+                   SD_pH = sd(pH, na.rm = TRUE),
+                   N = n(),
+                   SE = SD_pH / sqrt(N),
+                   Upper_CI = Mean_pH + 1.96 * SE,
+                   Lower_CI = Mean_pH - 1.96 * SE)
+
+# Calculate the overall mean pH
+ambient_mean_pH <- mesocosm.data %>% 
+  filter(pH_Treatment == "Ambient") %>%
+  dplyr::summarize(Mean_pH = mean(pH, na.rm = TRUE),
+                   SD_pH = sd(pH, na.rm = TRUE),
+                   N = n(),
+                   SE = SD_pH / sqrt(N),
+                   Upper_CI = Mean_pH + 1.96 * SE,
+                   Lower_CI = Mean_pH - 1.96 * SE)
+
+# Create a new variable for dodging manually
+pH_Temp_data$Temp_Treatment_Offset <- as.numeric(pH_Temp_data$Temp_Treatment)
+# Apply a different offset for each pH_Treatment
+pH_Temp_data$Temp_Treatment_Offset <- ifelse(pH_Temp_data$pH_Treatment == "Low",
+                                              pH_Temp_data$Temp_Treatment_Offset - 0.2,
+                                              pH_Temp_data$Temp_Treatment_Offset + 0.2)
+
+
+# First, create a data frame with the y-intercepts and corresponding colors
+hline_data <- data.frame(
+  yintercept = seq(12, 26, by = 2),
+  Temp_Treatment = seq(12, 26, by = 2)  # This should match your Temp_Treatment variable
+)
+
+# Then map the colors to this new data within geom_hline()
+mesocosm_plot_temp_pub <- ggplot(pH_Temp_data, aes(x = Temp_Treatment_Offset, y = Mean_Temp_C)) +
+  geom_point(aes(color = as.numeric(Temp_Treatment)), size = 2) +
+  geom_errorbar(
+    aes(ymin = Mean_Temp_C - SD_Temp_C, ymax = Mean_Temp_C + SD_Temp_C, color = as.numeric(Temp_Treatment)),
+    width = 0.1,
+    size = 0.75
+  ) +
+  scale_color_gradient(low = "#FFEC8B", high = "#CD3333", name = "Temp (°C)", limits = c(12, 26), breaks = seq(12, 26, by = 2)) +
+  scale_x_continuous(breaks = seq(12, 26, by = 2), limits = c(11, 27)) +
+  scale_y_continuous(breaks = seq(12, 26, by = 2), limits = c(11, 27)) +
+  geom_hline(data = hline_data, aes(yintercept = yintercept, color = as.numeric(Temp_Treatment)), linetype = "dashed") +
+  labs(x = "Temp Treatment", y = "Mean Temp (°C)", color = "Temp (°C)") +
+  theme_classic() +
+  theme(
+    text = element_text(family = "Times New Roman", size = 12),
+    axis.title = element_text(size = 12),
+    legend.position = "right"
+  )
+
+
+# Create a plot with standard error bars for Mean_pH
+mesocosm_plot_pH_pub <- ggplot(pH_Temp_data, aes(x = factor(Temp_Treatment), y = Mean_pH, color = factor(pH_Treatment))) +
+  geom_point(position = position_dodge(0.75), size = 2) +
+  geom_errorbar(
+    aes(ymin = Mean_pH - SD_pH, ymax = Mean_pH + SD_pH),
+    width = 0.2,
+    position = position_dodge(0.75),
+    size = 1
+  ) +
+  geom_hline(aes(yintercept = ambient_mean_pH$Mean_pH), linetype = "dashed", color = c("darkcyan")) +
+  geom_hline(aes(yintercept = low_mean_pH$Mean_pH), linetype = "dashed", color = c("cyan3")) +
+  # Add shaded confidence intervals for the overall means
+  #geom_ribbon(data = mean_pH_data, aes(ymin = Lower_CI, ymax = Upper_CI), alpha = 0.25) +
+  labs(x = "Temp Treatment",
+    y = "Mean pH",
+    color = "pH Treatment"
+  ) +
+  scale_color_manual(values = c("Ambient" = "darkcyan", "Low" = "cyan3")) +  # Specify colors as needed
+  theme_classic() +
+  theme(text = element_text(family = "Times New Roman", size = 12),
+        axis.title = element_text(size = 12),
+        legend.position = "right") 
+
+
+
+# Create a point plot with error bars for Mean pH and SE, colored in orange and cyan3
+mesocosm_mean_pH_plot_pub <- ggplot(pH_Temp_data, aes(x = pH_Treatment, y = Mean_pH, color = pH_Treatment)) +
+  geom_hline(aes(yintercept = ambient_mean_pH$Mean_pH), linetype = "dashed", color = c("darkcyan")) +
+  geom_hline(aes(yintercept = low_mean_pH$Mean_pH), linetype = "dashed", color = c("cyan3")) +
+  geom_point(position = position_dodge(width = 0.2), size = 3) +
+  geom_errorbar(aes(ymin = Mean_pH - SD_pH, ymax = Mean_pH + SD_pH, color = pH_Treatment), position = position_dodge(width = 0.2), width = 0.2) +
+  labs(x = "pH Treatment",
+       y = "Mean pH",
+       color = "pH Treatment") +
+  theme_classic() +
+  scale_color_manual(values = c("darkcyan", "cyan3")) +
+  theme(text = element_text(family = "Times New Roman", size = 12),
+        axis.title = element_text(size = 12),
+        legend.position = "right")  # Center and bold the title
+
+# Display the plots
+print(mesocosm_plot_temp_pub)
+print(mesocosm_plot_pH_pub)
+print(mesocosm_mean_pH_plot_pub)
+
+```
+
+```{r}
+
+
 # Filter out rows where pH_Treatment is not equal to "Sump"
 temp_summary_data <- summary_data %>%
   filter(pH_Treatment != "Sump") %>% 
@@ -641,63 +757,314 @@ print(tukey_result)
 ```
 
 
+### Mesocosm Logger Time Series Data ###
+
+
 ```{r}
-# Create a plot with standard error bars for Mean_Temp_C
-ggplot(summary_data, aes(x = factor(Temp_Treatment), y = Mean_Temp_C, color = factor(pH_Treatment))) +
-  geom_point(position = position_dodge(0.75), size = 2) +
-  geom_errorbar(
-    aes(ymin = Mean_Temp_C - SD_Temp_C, ymax = Mean_Temp_C + SD_Temp_C),
-    width = 0.2,
-    position = position_dodge(0.75),
-    size = 1
-  ) +
-  geom_hline(yintercept = c(12, 14, 16, 18, 20, 22, 24, 26), linetype = "dashed") +
-  labs(
-    x = "Temp Treatment",
-    y = "Mean Temp (°C)",
-    color = "pH Treatment"
-  ) +
-  ggtitle("Mean Temperature by pH Treatment (Mean Temp +/- SE)") +
-  scale_color_manual(values = c("Ambient" = "orange", "Low" = "cyan3")) +  # Specify orange and cyan as colors
-  theme_minimal() +
-  theme(plot.title = element_text(hjust = 0.5, face = "bold"))  # Center and bold the title
+#Reading in CSV
+mesocosm.metadata <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_Metadata.csv"))
 
+#Reading in CSV
+TNK_2 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-2-SN20565253 2022-09-03 20_17_13 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_2")
 
-# Create a plot with standard error bars for Mean_pH
-ggplot(summary_data, aes(x = factor(Temp_Treatment), y = Mean_pH, color = factor(pH_Treatment))) +
-  geom_point(position = position_dodge(0.75), size = 2) +
-  geom_errorbar(
-    aes(ymin = Mean_pH - SD_pH, ymax = Mean_pH + SD_pH),
-    width = 0.2,
-    position = position_dodge(0.75),
-    size = 1
-  ) +
-  geom_hline(yintercept = c(7.7, 8.0), linetype = "dashed", color = c("cyan3", "orange")) +
-  labs(
-    x = "Temp Treatment",
-    y = "Mean pH",
-    color = "pH Treatment"
-  ) +
-  ggtitle("Mean pH by Treatment (Mean pH +/- SE)") +
-  scale_color_manual(values = c("Ambient" = "orange", "Low" = "cyan3", "Sump"="grey")) +  # Specify colors as needed
-  theme_minimal() +
-  theme(plot.title = element_text(hjust = 0.5, face = "bold"))  # Center and bold the title
+TNK_3 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-3-SN20565265 2022-09-03 20_18_14 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_3")
 
-# Create a point plot with error bars for Mean pH and SE, colored in orange and cyan3
-ggplot(summary_data, aes(x = pH_Treatment, y = Mean_pH, color = pH_Treatment)) +
-  geom_point(position = position_dodge(width = 0.2), size = 3) +
-  geom_errorbar(aes(ymin = Mean_pH - SD_pH, ymax = Mean_pH + SD_pH, color = pH_Treatment), position = position_dodge(width = 0.2), width = 0.2) +
-  labs(title = "pH Treatment Summary (Mean pH +/- SE)",
-       x = "pH Treatment",
-       y = "Mean pH",
-       color = "pH Treatment") +
-  theme_minimal() +
-  scale_color_manual(values = c("orange", "cyan3", "grey")) +
-  theme(plot.title = element_text(hjust = 0.5, face = "bold"))  # Center and bold the title
+TNK_4 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-4-SN20565252 2022-09-03 20_19_11 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_4")
+
+TNK_5 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-5-SN20569922 2022-09-03 20_20_18 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_5")
+
+TNK_6 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-6-SN20565263 2022-09-03 20_21_26 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_6")
+
+TNK_7 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-7-SN20714140 2022-09-03 20_23_13 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_7")
+
+TNK_8 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-8-SN20565261 2022-09-03 20_24_16 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_8")
+
+TNK_9 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-9-SN20565255 2022-09-03 20_25_16 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_9")
+
+TNK_10 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-10-SN20714141 2022-09-03 20_26_26 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_10")
+
+TNK_11 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-11-SN20565260 2022-09-03 20_27_21 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_11")
+
+TNK_12 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-12-SN20565262 2022-09-03 20_29_03 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_12")
+
+TNK_13 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-13-SN20714139 2022-09-03 20_30_01 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_13")
+
+TNK_14 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-14-SN20565254 2022-09-03 20_31_00 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_14")
+
+TNK_15 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-15-SN20565250 2022-09-03 20_16_18 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_15")
+
+TNK_16 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-16-SN20569983 2022-09-03 20_32_03 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_16")
+
+TNK_18 <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-18-SN20569985 2022-09-03 20_35_53 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_18")
+
+TNK_AIR <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-AIR-SN20565251 2022-09-03 20_14_50 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_AIR")
+
+TNK_SMP <- read_csv(
+  here::here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature", "TNK-SMP-SN20569984 2022-09-03 20_33_58 -0700.csv"),
+  skip = 2,
+  col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
+) %>%
+  select(1:2)%>%
+  slice(-1) %>% 
+  mutate(Datetime = ymd_hms(Datetime),
+         Time = hms(format(Datetime, format = "%H:%M:%S")),
+         Temp_C= as.numeric(Temp_C),
+         Tank_ID = "TNK_SMP")
+
 
 ```
 
-### Mesocosm Logger Time Series Data ###
+
+```{r}
+tank_timeseries <- bind_rows(TNK_2, TNK_3, TNK_4, TNK_5, TNK_6, TNK_7, TNK_8, TNK_9, TNK_10, TNK_11, TNK_12, TNK_13, TNK_14, TNK_15, TNK_16, TNK_18, TNK_AIR, TNK_SMP)
+
+filtered_timeseries <- tank_timeseries %>%
+  group_by(Tank_ID) %>%
+  filter(Datetime >= "2022-08-23", #day experiment began - not counting acclimation period
+         Datetime <= "2022-09-02") %>% 
+  mutate(Tide = ifelse(Time > hms("12:00:00") & Time < hms("18:00:00") | 
+                       Time > hms("00:00:00") & Time < hms("06:00:00"),
+                       "Low","High")) %>% # tide columns
+  na.omit() %>%
+  left_join(mesocosm.metadata)
+
+mesocosm.data <- read_csv(here::here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"))
+mesocosm.data <- mesocosm.data %>%
+  mutate(Datetime = ymd_hms(paste0(Date, "10:00:00"))) %>%
+  select(Datetime, Tank_ID, Temp_Treatment, pH_Treatment, Temp_C_Spot=Temp_C) %>%
+  na.omit()
+
+# join the time series and the spot check data 
+filtered_timeseries <- filtered_timeseries %>%
+  left_join(mesocosm.data, by = c("Datetime", "Tank_ID", "Temp_Treatment", "pH_Treatment")) %>% 
+  mutate(Date = as.Date(Datetime))
+
+# 1. Calculate the difference between spot check and logger value at 10 AM
+difference <- filtered_timeseries %>%
+  filter(hour(Datetime) == 10) %>%
+  group_by(Tank_ID, Date) %>%
+  dplyr::summarize(Temp_Diff = mean(Temp_C - Temp_C_Spot, na.rm = TRUE))
+
+# 2. Apply the difference to correct the values in the time series data
+tank_timeseries_corrected <- filtered_timeseries %>%
+  left_join(difference, by = c("Tank_ID", "Date")) %>%
+  mutate(Temp_C_Corrected = Temp_C - Temp_Diff)
+
+# 3. Create a plot of the corrected temperature values
+logger.temp.plot <- ggplot(tank_timeseries_corrected, aes(x = Datetime, y = Temp_C_Corrected)) +
+  geom_point(aes(color = Tide), na.rm = TRUE) +
+  geom_hline(aes(yintercept = Temp_Treatment)) +
+  facet_wrap(~Tank_ID) +
+  scale_color_discrete(name = "Tank") +
+  scale_y_continuous(breaks = seq(12, 36, by = 4)) +
+  labs(
+    title = "Mesocosm Temperature Range",
+    x = "Date",
+    y = "Temperature (°C)"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Helvetica", size = 10, color = "black"),
+    legend.title = element_text(size = 10),
+    plot.title = element_text(face = "bold", hjust = 0.5)  # Bold and centered title
+  )
+logger.temp.plot
+
+# 1. Calculate the mean for each combination of Tank_Treatment and pH_Treatment
+means <- tank_timeseries_corrected %>%
+  filter(pH_Treatment != "Sump", Temp_Treatment != "10") %>%
+  group_by(Temp_Treatment, pH_Treatment) %>%
+  dplyr::summarize(mean_Temp_C = mean(Temp_C_Corrected, na.rm = TRUE))
+
+# 2. Compute the IQR for each combination
+iqr_values <- tank_timeseries_corrected %>%
+  group_by(Temp_Treatment, pH_Treatment) %>%
+  dplyr::summarize(Q1 = quantile(Temp_C_Corrected, 0.25, na.rm = TRUE),
+            Q3 = quantile(Temp_C_Corrected, 0.75, na.rm = TRUE),
+            IQR = Q3 - Q1)
+
+# 3. Filter out values that fall outside a certain range defined by the IQR
+filtered_data <- tank_timeseries_corrected %>%
+  left_join(iqr_values, by = c("Temp_Treatment", "pH_Treatment")) %>%
+  filter(Temp_C_Corrected >= Q1 - 1.5 * IQR, Temp_C_Corrected <= Q3 + 1.5 * IQR)
+
+filtered_means <- filtered_data %>%
+  group_by(Temp_Treatment, pH_Treatment) %>%
+  dplyr::summarize(mean_Temp_C = mean(Temp_C_Corrected, na.rm = TRUE))
+
+print(filtered_means)
+print(means)
+```
 
 ```{r}
 
