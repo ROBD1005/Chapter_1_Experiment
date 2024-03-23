@@ -1,0 +1,426 @@
+---
+title: "For Loop Respirometry"
+author: "R.J. Dellinger"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(LoLinR)
+library(boot)
+library(broom)
+library(patchwork)
+library(respR)
+library(respirometry)
+```
+
+
+```{r}
+
+#Reading in experimental treatment metadata 
+experiment.metadata <- read_csv(here::here("Data", "Snail_Metadata","Experiment_Treatment_Metadata.csv"), show_col_types = FALSE)
+
+#Reading in organism morphometric data 
+snail.data <- read_csv(here::here("Data", "Snail_Metadata", "Tegula_funebralis_Morphometric_Data.csv"), show_col_types = FALSE) %>% 
+  select(Snail_ID:Experiment_End_Date)
+
+#Reading in ash free dry weight data
+snail.afdw.data <- read_csv(here::here("Data", "Snail_Metadata","Tegula_funebralis_AFDW.csv"), show_col_types = FALSE)%>% 
+  select(Snail_ID, Ash_Free_Dry_Weight)
+
+#joining experimental treatment and snail data 
+experiment.data <- left_join(experiment.metadata, snail.data, by = join_by(Snail_ID))
+
+#joining data and ash free dry weight 
+experiment.data <- left_join(experiment.data, snail.afdw.data, by = join_by(Snail_ID)) 
+
+#joining data and respiration metadata 
+experiment.data <- left_join(experiment.data, respo.metadata, by = join_by(Snail_ID))
+
+
+```
+
+
+```{r}
+
+# Function to read a CSV file, skip the first row, skip the last few rows, and check for issues
+read_and_process_csv <- function(filename, path) {
+  
+  # Determine the number of lines in the file and subtract 4 to skip the last few
+  total_lines <- length(readLines(file.path(path, filename)))
+  data_length <- total_lines - 4  # Assuming the last 4 lines are not needed
+  
+  # Read the CSV file, skipping the first row and the last few rows
+  data <- read_csv(file.path(path, filename), skip = 1, n_max = data_length, col_names=TRUE, 
+                   show_col_types = FALSE, name_repair = "unique_quiet")
+  
+  # Return the data without the last rows
+  return(data)
+}
+
+#Set the path to the location of the raw oxygen data files
+path.p <- here::here("Data","Respirometry_Data")
+
+#renaming the file names as file.names.full
+file.names <- list.files(path = path.p, pattern = "csv$", recursive = TRUE)
+
+#creating data frame to import respiration data into 
+respiration.rates <- data.frame(matrix(NA, nrow=length(file.names), ncol=6)) #setting column names
+colnames(respiration.rates) <- c("File_ID","Intercept", "umolO2.L.sec","Temp.C", "Salinity", "Pressure") 
+
+for(i in 1:length(file.names)) {
+  
+#Reading and processing respirometry data
+Respiration_Data <- read_and_process_csv(file.names[i], path.p) %>%
+    mutate(File_ID=file.names[i]) %>% # Add the file name to the data frame
+    dplyr::select(File_ID, Date, Time, Value, Temp, Salinity, Pressure) %>%  # Selecting variables
+    unite(Datetime, Date, Time, sep = " ") %>%  # Combine Date and Time into Datetime
+    mutate(Datetime = mdy_hms(Datetime)) %>%  # Convert Datetime to POSIXct format
+    drop_na()  # Drop rows with NA values
+
+  # Getting the active file name
+  Filename <- sub(".csv", "", file.names[i])
+  
+  # Matching file row to file name 
+  Row <- which(experiment.data$File_ID == file.names[i])
+  
+  Start_Time <- ymd_hms(experiment.data$Respirometry_Start_Time[Row])
+  Stop_Time <- ymd_hms(experiment.data$Respirometry_Stop_Time[Row])
+  
+  # Trimming start and stop times
+  Respiration_Data <-  Respiration_Data %>%
+    filter(Datetime >= Start_Time & Datetime <= Stop_Time) %>% # filter to start and stop time
+    slice(120:n()) %>% # drop the first two minutes of data
+    mutate(Sec = 1:n())  # create a new column for every second for the regression
+  
+  Respiration_Data_Unthinned <- Respiration_Data # saving original data prior to thinning
+  
+  Respiration_Tibble <- tibble(Time = as.numeric(), Value = as.numeric(),
+                               Temp = as.numeric(), Sec = as.numeric(),
+                               Salinity = as.numeric(), Pressure = as.numeric())
+
+  Subsample <- respR::subsample(Respiration_Data, n = 15, plot=FALSE)
+  Respiration_Tibble<-rbind(Respiration_Tibble, Subsample)
+  
+# Plotting full data     
+full.plot<- ggplot(Respiration_Data_Unthinned, aes(x = Sec, y = Value)) +
+    geom_point(color = "cyan3") +
+    labs(x = 'Time (seconds)', y = expression(paste(' O'[2],' (',mu,'mol/L)')),
+      title = "Original Data")
+  
+# Plotting thinned data 
+thinned.plot <- ggplot(Respiration_Tibble, aes(x = Sec, y = Value))+
+    geom_point(color = "cyan3")+
+    labs(x = 'Time (seconds)', y = expression(paste(' O'[2],' (',mu,'mol/L)')),
+      title = "Thinned Data")
+
+# Defining the alpha value for bootstrapping
+N <- nrow(Respiration_Tibble)
+alpha <- 0.3  #alpha value for bootstrapping
+min_n <- alpha * N
+
+if (min_n < 15) {
+  stop("Alpha is too small")
+}
+
+# Bootstrapping technique (Olito et al. 2017)
+Regs <- rankLocReg(xall=Respiration_Tibble$Sec, yall=Respiration_Tibble$Value, alpha=alpha, method="pc", verbose=TRUE)  
+
+#creates pdf of each individual respiration plot and statistics for each plot
+pdf(paste0(here::here("Output","Respo_Output","Thinning_Plots"),"/", Filename ,"thinning.pdf"))
+  
+plot(Regs) # plot the results of the regs bootstrapping technique
+plot(full.plot+thinned.plot) # use patchwork to bring the raw and thinned data together
+dev.off()
+
+# fill in all the O2 consumption and rate data
+respiration.rates[i,2:3] <- Regs$allRegs[1,c(4,5)] #inserts slope and intercept in the dataframe
+respiration.rates[i,1] <- paste0(Filename,".csv") #stores the file name
+respiration.rates[i,4] <- mean(Respiration_Tibble$Temp, na.rm=TRUE) #stores mean temperature organisms experienced
+respiration.rates[i,5] <- mean(Respiration_Tibble$Salinity, na.rm=TRUE) #stores mean salinity organisms experienced
+respiration.rates[i,6] <- mean(Respiration_Tibble$Pressure, na.rm=TRUE) #stores mean pressure organisms experienced
+
+}
+
+#writing out data as a CSV
+write_csv(respiration.rates, here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv")) #saves to location
+
+
+```
+
+
+```{r}
+# Reading and Merging Data 
+respirometry.data.summarized <- read_csv(here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv"), show_col_types = FALSE)
+carbonate.treatment.info <- read_csv(here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"), show_col_types = FALSE)
+temperature.treatment.info <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_Temp_Means.csv"), show_col_types = FALSE)
+
+# Mesocosm Biogeochemistry Data
+#calculates mean_pH based on H^+ pH values, first converted to [H+] then averaged and converted back to a mean pH value 
+carbonate.treatment.info <- carbonate.treatment.info %>%
+  select(Tank_ID, Temp_Treatment, pH_Treatment, pH) %>% 
+  group_by(Tank_ID, Temp_Treatment, pH_Treatment) %>%
+  summarize(mean_pH=respirometry::mean_pH(pH, na.rm = FALSE))
+
+treatment.info <- left_join(carbonate.treatment.info, temperature.treatment.info, by = join_by(Temp_Treatment, pH_Treatment)) %>% 
+  select(Tank_ID, mean_pH, Mean_Temp_C)
+
+#Joining respiration data with the data 
+joined.respo.dataset <- left_join(experiment.data, respirometry.data.summarized, by = join_by(File_ID)) %>% 
+  filter(pH_Treatment != "Sump") %>% 
+  select(Snail_ID, Intercept, umolO2.L.sec, Temp.C, Salinity, Pressure, Organism_Volume_mL, Ash_Free_Dry_Weight, Tank_ID, 
+         Identity, File_ID)
+
+#Joining treament data with the respiration data
+joined.respo.dataset <- left_join(joined.respo.dataset, treatment.info, by = join_by(Tank_ID))
+
+#Joining data and selecting for respiration analysis data
+filtered.respo.dataset <- joined.respo.dataset 
+
+#calculating chamber water volume by subtracting organism volume from chamber volume
+joined.respo.dataset <- joined.respo.dataset %>%              
+  mutate(Volume_mL=650-Organism_Volume_mL) 
+
+
+
+
+```
+
+
+```{r}
+# mean_pH() calculates mean pH on H^+ 
+library(RespR)
+RespR <- Respiration_Data_Unthinned %>% 
+  mutate(time=as.numeric(Sec),
+         oxygen=as.numeric(Value),
+         temp=as.numeric(Temp)) %>% 
+  dplyr::select(time, oxygen, temp)
+  
+rspR.example <- respR::subsample(RespR, n = 20) # subsample the data to 200 points
+
+inspect(RespR)
+calc_rate(RespR) 
+oxy_crit(RespR)
+respirometry::calc_E(temp=RespR$temp, x=RespR$oxygen)
+# bg_rate <- calc_rate.bg(bg_insp) # backgrounf rate
+# urch_rate_adj <- adjust_rate(urch_rate, by = bg_rate, method = "mean")
+#urch_rate_adj_num <- adjust_rate(-0.0218, by = -0.000833)
+# convert_rate()  can be used to convert the unitless rate values we have dealt with up to now to these reportable metrics:Conversion requires the units of the original raw data (time.unit, oxy.unit), and the volume of fluid in the respirometer in Litres (𝐿). Mass-specific rates require the mass of the specimen in kilograms (𝑘𝑔), and area-specific rates require the area of the specimen in metres squared (𝑚2). Lastly, an output.unit appropriate to the inputs should be specified. This should be in the correct order: “oxygen/time” or “oxygen/time/mass” or “oxygen/time/area”.
+
+#convert_rate(urch_rate_adj,         # urchin rate adjusted for background
+             #oxy.unit = "mg/L",     # oxygen units of the original raw data
+             #time.unit = "min",     # time units of the original raw data
+             #output.unit = "mg/h",  # output unit
+             #volume = 1.09)         # effective volume of the respirometer
+# convert_rate(urch_rate_adj, 
+             #oxy.unit = "mg l-1", 
+             #time.unit = "m", 
+             #output.unit = "mg/s/kg",
+             #volume = 1.09, 
+            # mass = 0.19)
+#
+#
+#> Oxygen Concentration or Pressure Units - Do not require t, S and P
+#> [1] "mg/L"   "ug/L"   "mol/L"  "mmol/L" "umol/L" "nmol/L" "pmol/L"
+#> Oxygen Concentration or Pressure Units - Require t, S and P
+#>  [1] "uL/L"    "mL/L"    "mm3/L"   "cm3/L"   "cc/L"    "mg/kg"   "ug/kg"   "ppm"     "mol/kg"  "mmol/kg" "umol/kg" "nmol/kg" "pmol/kg" "uL/kg"   "mL/kg"   "%Air"    "%Oxy"    "Torr"    "hPa"     "kPa"     "mmHg"    "inHg"   
+#> 
+#> Volume units for use in flow rates in calc_rate.ft and convert_rate.ft
+#> (e.g. as in 'ml/min', 'L/s', etc.)
+#> [1] "uL" "mL" "L" 
+#> 
+#> Time units (for 'time.unit' or as part of 'flowrate.unit')
+#> [1] "sec"  "min"  "hour" "day" 
+#> 
+#> Mass units
+#> [1] "ug" "mg" "g"  "kg"
+#> 
+#> Area units
+#> [1] "mm2" "cm2" "m2"  "km2"
+#> 
+#> 
+#> #> # Metabolic Rate Units # -----------------------------
+#> For use in 'convert_rate', 'convert_rate.ft', 'convert_MR'
+#> 
+#> Must be in correct order:
+#> Absolute rates:        Oxygen/Time       e.g. 'mg/sec',     'umol/min',     'mL/h'
+#> Mass-specific rates:   Oxygen/Time/Mass  e.g. 'mg/sec/ug',  'umol/min/g',   'mL/h/kg'
+#> Area-specific rates:   Oxygen/Time/Area  e.g. 'mg/sec/mm2', 'umol/min/cm2', 'mL/h/m2'
+#> 
+#> Output Oxygen amount units
+#>  [1] "ug"   "mg"   "pmol" "nmol" "umol" "mmol" "mol"  "uL"   "mL"   "mm3"  "cm3" 
+#> 
+#> Output Time units
+#> [1] "sec"  "min"  "hour" "day" 
+#> 
+#> Output Mass units for mass-specific rates
+#> [1] "ug" "mg" "g"  "kg"
+#> 
+#> Output Area units for surface area-specific rates
+#> [1] "mm2" "cm2" "m2"  "km2"
+#> 
+#> urch_rate_final <- convert_rate(urch_rate_adj, 
+                               # oxy.unit = "mg/L", 
+                              #  time.unit = "mins", 
+                               # output.unit = "ml/h/kg",
+                              # volume = 1.09, 
+                              #  mass = 0.19,
+                              #  t = 20,
+                              # S = 30,
+                              #  P = 1.01)
+#>  convert_MR() 
+#> convert_MR(urch_rate_final, 
+#> to = "umol/h/g",
+#> t = 20,
+#> S = 30,
+#> P = 1.01)
+```
+
+```{r}
+```
+
+
+```{r}
+# Reading and Merging Data 
+respirometry.data.summarized <- read_csv(here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv"))
+
+#Empty chamber volume (650 mL)
+Chamber_Volume <- 650
+
+#Joining respiration data with the data 
+joined.respo.dataset <- left_join(experiment.data, respirometry.data.summarized, by = join_by(File_ID))
+
+
+#calculating chamber water volume by subtracting organism volume from chamber volume
+joined.respo.dataset <- joined.respo.dataset %>%              
+mutate(Volume_mL=Chamber_Volume-Organism_Volume_mL, 
+       umolO2.sec = (umolO2.L.sec/1000)*Volume_mL) #converting from L to mL and standardizing to water volume
+
+# Calculating control respiration rates
+respo.control.data <- joined.respo.dataset %>%
+  filter(Identity=="Control") %>% #filtering for blanks
+  group_by(Temp_Treatment, pH_Treatment, Identity) %>% #grouping by treatments
+  summarise(umolO2.sec = mean(umolO2.sec, na.rm=TRUE)) %>% #means for blanks and organisms 
+  select(blank.rate = umolO2.sec) #selecting for only blank rates
+
+#joining summarized control respiration data to full respiration dataset 
+respo.dataset <- left_join(joined.respo.dataset, respo.control.data)
+
+# converting from umolO2/sec to umolO2/hour and normalizing to ash free dry weight (grams)
+respo.rates.dataset <- respo.dataset %>% 
+  mutate(
+    umolO2.sec.uncorrected = -(umolO2.sec),
+    umolO2.sec.corrected = -(umolO2.sec - blank.rate), # subtract the blank rates from the raw rates
+    umolO2.gram.hr.uncorrected = umolO2.sec.uncorrected * 3600 / Ash_Free_Dry_Weight,
+    umolO2.gram.hr.corrected = umolO2.sec.corrected * 3600 / Ash_Free_Dry_Weight) %>% 
+  #correcting for negative respiration rates and for values that fall below 0
+  mutate(
+    umolO2.gram.hr.corrected = ifelse(umolO2.gram.hr.corrected < 0, 0, umolO2.gram.hr.corrected), 
+    umolO2.gram.hr.uncorrected = ifelse(umolO2.gram.hr.uncorrected < 0, 0, umolO2.gram.hr.uncorrected)) %>% 
+  filter(Identity == "Treatment") %>% 
+  select(Snail_ID, Temp_Treatment, pH_Treatment, umolO2.sec.uncorrected, umolO2.sec.corrected, umolO2.gram.hr.corrected,  
+         umolO2.gram.hr.uncorrected, Temp.C, Volume_mL)
+
+as_tibble(respo.rates.dataset)
+
+write_csv(respo.rates.dataset, here("Data", "Thinned_Respirometry_Data", "Respiration.Rates.Dataset.csv"))
+```
+
+# For Looping Data (Original Script Created by Dr. Nyssa Silbiger)
+
+```{r}
+
+# Saving file names
+filenames_final <- experiment.data$File_ID
+
+# Importing all individual CSV files
+file.names<-basename(list.files(path = path.p, pattern = "csv$", recursive = TRUE))
+
+#creating data frame to import respiration data into 
+RespoR <- data.frame(matrix(NA, nrow=length(filenames_final), ncol=4)) 
+colnames(RespoR) <- c("File_ID","Intercept", "umolO2.L.sec","Temp.C") #setting column names
+
+for(i in 1:length(filenames_final)) {
+  
+  #reading in each file of raw data 
+  Respo.Data <- read_csv(file.path(path.p, paste0(filenames_final[i])), skip = 1) %>%
+    mutate(File_ID=file.path(path.p, filenames_final[i])) %>% #adding file names
+    dplyr::select(File_ID, Date, Time, Value, Temp) %>% #selecting for variables
+    unite(Date, Time, col="Time", remove=T, sep = " ") %>% #creating datetime
+    mutate(Time = mdy_hms(Time)) %>% # covert time
+    drop_na() #omiting NAs
+  
+  # subsetting file names  
+  subset.filenames<- sub(".*/", "", experiment.data$File_ID[i])
+  Respo.Data$File_ID <- subset.filenames  
+
+  # Getting the file name without the .csv
+  rename<- sub(".csv","", filenames_final[i])
+  
+  # matching file row to file name 
+  Frow<-which(subset.filenames == experiment.data$File_ID) 
+  
+  # start and stop time for each file name
+  start<- ymd_hms(experiment.data$Respirometry_Start_Time[Frow])
+  stop <-ymd_hms(experiment.data$Respirometry_Stop_Time[Frow])
+  
+  # trimming time from data 
+  Respo.Data <-  Respo.Data %>%
+    filter(Time >= start & Time <= stop) %>% # filter to start and stop time
+    slice(420:n()) %>% # drop first few min
+    mutate(sec = 1:n())  # create a new column for every second for the regression
+    
+  Respo.Data.orig<-Respo.Data # saving original data prior to thinning
+  
+  #Creating a new table prior to prepare to thin data
+  Respirometry.Tibble<-tibble(Time=as.numeric(), Value=as.numeric(),
+                              Temp=as.numeric(), sec=as.numeric())
+    
+#thinning data by every 20 seconds and placing into table 
+for(j in 1:nrow(Respo.Data)) { # alternative thinning strategy
+    if(j%%20==0){
+      Respirometry.Tibble<-rbind(Respirometry.Tibble, Respo.Data[j,])
+    }
+}
+
+# plotting full data     
+full.plot<- ggplot(Respo.Data.orig, aes(x = sec, y = Value)) +
+    geom_point(color = "cyan3") +
+    labs(x = 'Time (seconds)', y = expression(paste(' O'[2],' (',mu,'mol/L)')),
+      title = "original")
+  
+# plotting thinned data 
+thinned.plot <- ggplot(Respirometry.Tibble, aes(x = sec, y = Value))+
+    geom_point(color = "cyan3")+
+    labs(x = 'Time (seconds)', y = expression(paste(' O'[2],' (',mu,'mol/L)')),
+      title = "thinned")
+ 
+#bootstrapping technique (Olito et al. 2017)
+Regs <- rankLocReg(xall=Respirometry.Tibble$sec, yall=Respirometry.Tibble$Value, alpha=0.5, method="pc", verbose=TRUE)  
+
+#creates pdf of each individual respiration plot and statistics for each plot
+pdf(paste0(here("Output","Respo_Output","Thinning_Plots"),"/", rename,"thinning.pdf"))
+  
+plot(Regs) # plot the results of the regs bootstrapping technique
+plot(full.plot+thinned.plot) # use patchwork to bring the raw and thinned data together
+dev.off()
+  
+# fill in all the O2 consumption and rate data
+RespoR[i,2:3] <- Regs$allRegs[1,c(4,5)] #inserts slope and intercept in the dataframe
+RespoR[i,1] <- paste0(rename,".csv") #stores the file name
+RespoR[i,4] <- mean(Respirometry.Tibble$Temp, na.rm=T) #stores mean temperature organisms experienced
+  
+}
+
+#writing out data as a CSV
+write_csv(RespoR, here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv")) #saves to location
+
+```
+```
+

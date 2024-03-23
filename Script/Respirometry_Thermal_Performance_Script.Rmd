@@ -32,14 +32,13 @@ library(ggpmisc)
 # Loading Data
 
 ```{r}
-
 #Reading in organism morphometric data 
 snail.data <- read_csv(here::here("Data", "Snail_Metadata", "Tegula_funebralis_Morphometric_Data.csv")) %>% 
   select(Snail_ID:Experiment_End_Date)
 
 #Reading in ash free dry weight data
 snail.afdw.data <- read_csv(here::here("Data", "Snail_Metadata","Tegula_funebralis_AFDW.csv"))%>% 
-  select(Snail_ID, Ash_Free_Dry_Weight)
+  select(Snail_ID, Dry_Weight_g, Ash_Content_g, Ash_Free_Dry_Weight)
 
 #Reading in respirometry metadata
 respo.metadata <- read_csv(here::here("Data", "Snail_Metadata","Respirometry_Metadata.csv"))
@@ -50,21 +49,9 @@ experiment.metadata <- read_csv(here::here("Data", "Snail_Metadata","Experiment_
 #loading tegula icon in
 image=here::here("Images", "Tegula_funebralis_icon.png")
 
-```
-
-# Data Wrangling 
-
-```{r}
-
-#joining experimental treatment and snail data 
-experiment.data <- left_join(experiment.metadata, snail.data, by = join_by(Snail_ID))
-
-#joining data and ash free dry weight 
-experiment.data <- left_join(experiment.data, snail.afdw.data, by = join_by(Snail_ID)) 
-
-#joining data and respiration metadata 
-experiment.data <- left_join(experiment.data, respo.metadata, by = join_by(Snail_ID)) 
-
+# Reading in Long Term Means 
+long.term.filtered.means <- read_csv(here::here("Data", "Mesocosm_Data", "Mesocosm_Temp_Filtered_Means.csv"))
+long.term.means <- read_csv(here::here("Data", "Mesocosm_Data", "Mesocosm_Temp_Means.csv"))
 
 #filtering out irresponsible snails & snails not run in respirometry
 experiment.data <- experiment.data %>% 
@@ -72,67 +59,67 @@ experiment.data <- experiment.data %>%
          Snail_ID != 43,
          Snail_ID != 72,
          Snail_ID != 61,
-        # Snail_ID != 67,
+         #Snail_ID != 67,
          #Snail_ID != 52
          ) # mortality (not responsive to forceps)
-
-
-
 ```
-# Exploring Snail Measurement Metrics 
+
 
 ```{r}
-lm.data<-snail.afdw.data %>% 
-  dplyr::select(Snail_ID, Initial_Blotted_Wet_Mass_g, Final_Blotted_Wet_Mass_g, Ash_Free_Dry_Weight) %>% 
-  filter(!is.na(Ash_Free_Dry_Weight)) %>%
-  filter(!grepl("Control", Snail_ID))
+# Ash Free Dry Weight Calculation and Comparison to Paine 1971
+#AFDW = DW * (1 - (Ash/100))
+#Percent Ash = (Ash Free Dry Weight / Initial Blotted Wet Mass) * 100
+#Percent Ash Reported by Paine 1971 ~9.02%
 
-#running linear regression for snail measurements (Final_Blotted_Wet_Mass_g versus Ash_Free_Dry_Weight)
-lm.snail.data <- lm(Final_Blotted_Wet_Mass_g ~ Ash_Free_Dry_Weight, data = lm.data)
+snail.afdw.data <- snail.afdw.data %>% 
+  mutate(Ash_Free_Dry_Weight=(Dry_Weight_g*(1-(Ash_Content_g/100)))) #overwritten as CSV
+  
+snail.data <- left_join(snail.data, snail.afdw.data, by = join_by(Snail_ID))
+
+snail.data <- snail.data %>% 
+  mutate(Percent_Ash=((Ash_Free_Dry_Weight/Initial_Blotted_Wet_Mass_g)*100),
+         Percent_Ash_Paine_1971= 9.02,
+         Expected_Ash_Free_Dry_Weight=Initial_Blotted_Wet_Mass_g*(Percent_Ash_Paine_1971/100)) %>%
+  select(Snail_ID, Initial_Blotted_Wet_Mass_g, Final_Blotted_Wet_Mass_g, Ash_Free_Dry_Weight, Percent_Ash,
+         Expected_Ash_Free_Dry_Weight) %>% 
+  na.omit()
+
+# AFDW Comparison
+mean.afdw <- snail.data %>% 
+  dplyr::summarize(Mean_AFDW = mean(Ash_Free_Dry_Weight, na.rm = TRUE),
+         Mean_Expected_AFDW = mean(as.numeric(Expected_Ash_Weight), na.rm = TRUE))
+
+```
+
+```{r}
+
+# Exploring Snail Measurement Metrics 
+
 #running linear regression for snail measurements (Initial_Blotted_Wet_Mass_g versus Ash_Free_Dry_Weight)
-lm.snail.data2 <- lm(Initial_Blotted_Wet_Mass_g ~ Ash_Free_Dry_Weight, data = lm.data)
+lm.snail.data <- lm(Initial_Blotted_Wet_Mass_g ~ Ash_Free_Dry_Weight, data = snail.data)
+
+plot(lm.snail.data)
+summary(lm.snail.data)
 
 # Extracting R-squared value
-rsquared_final <- summary(lm.snail.data)$r.squared
+rsquared <- summary(lm.snail.data)$r.squared
 
 # Plotting the data points
-plot(lm.data$Ash_Free_Dry_Weight, lm.data$Final_Blotted_Wet_Mass_g, 
-     xlab = "Ash Free Dry Weight", ylab = "Final Blotted Wet Mass (g)",
-     main = "Linear Regression of Snail Measurements (Final Blotted Wet Mass vs. Ash Free Dry Weight)")
-
-# Adding the regression line
-abline(lm.snail.data, col = "red")
-
-# Adding legend for regression line
-legend("topleft", legend = paste("Regression Line (R^2 =", round(rsquared_final, 3), ")", sep = ""), col = "red", lty = 1)
-
-# Adding text for R-squared value
-text(x = min(lm.data$Ash_Free_Dry_Weight), y = max(lm.data$Final_Blotted_Wet_Mass_g), 
-     labels = paste("R^2 =", round(rsquared_final, 3)), pos = 2)
-
-# Running linear regression
-lm.snail.data2 <- lm(Initial_Blotted_Wet_Mass_g ~ Ash_Free_Dry_Weight, data = lm.data)
-
-# Extracting R-squared value
-rsquared <- summary(lm.snail.data2)$r.squared
-
-# Plotting the data points
-plot(lm.data$Ash_Free_Dry_Weight, lm.data$Initial_Blotted_Wet_Mass_g, 
+plot(snail.data$Ash_Free_Dry_Weight, snail.data$Initial_Blotted_Wet_Mass_g, 
      xlab = "Ash Free Dry Weight", ylab = "Initial Blotted Wet Mass (g)",
      main = "Linear Regression of Snail Measurements (Initial Blotted Wet Mass vs. Ash Free Dry Weight)")
 
 # Adding the regression line
-abline(lm.snail.data2, col = "blue")
+abline(lm.snail.data, col = "blue")
+
+# Adding text for R-squared value
+text(x = min(snail.data$Ash_Free_Dry_Weight), y = max(snail.data$Initial_Blotted_Wet_Mass_g), 
+     labels = paste("R^2 =", round(rsquared, 3)), pos = 2)
 
 # Adding legend for regression line
 legend("topleft", legend = paste("Regression Line (R^2 =", round(rsquared, 3), ")", sep = ""), col = "blue", lty = 1)
 
-# Adding text for R-squared value
-text(x = min(lm.data$Ash_Free_Dry_Weight), y = max(lm.data$Initial_Blotted_Wet_Mass_g), 
-     labels = paste("R^2 =", round(rsquared, 3)), pos = 2)
-
 ```
-
 
 
 
@@ -208,102 +195,7 @@ cat("Standard Deviation:", sd_volume, "\n")
 
 ```
 
-# For Looping Data (Original Script Created by Dr. Nyssa Silbiger)
 
-```{r Foorloop Code for Respirometry Script, eval=FALSE, message=FALSE}
-
-#Saving file names
-filenames_final <- experiment.data$File_ID
-
-#Set the path to the location of the raw oxygen data files
-path.p<-here::here("Data","Respirometry_Data")
-
-# importing all individual CSV files
-file.names<-basename(list.files(path = path.p, pattern = "csv$", recursive = TRUE))
-
-#renaming the file names as file.names.full
-file.names.full<-list.files(path = path.p, pattern = "csv$", recursive = TRUE) 
-
-#creating data frame to import respiration data into 
-RespoR <- data.frame(matrix(NA, nrow=length(filenames_final), ncol=4)) 
-colnames(RespoR) <- c("File_ID","Intercept", "umolO2.L.sec","Temp.C") #setting column names
-
-for(i in 1:length(filenames_final)) {
-  
-  #reading in each file of raw data 
-  Respo.Data <- read_csv(file.path(path.p, paste0(filenames_final[i])), skip = 1) %>%
-    mutate(File_ID=file.path(path.p, filenames_final[i])) %>% #adding file names
-    dplyr::select(File_ID, Date, Time, Value, Temp) %>% #selecting for variables
-    unite(Date, Time, col="Time", remove=T, sep = " ") %>% #creating datetime
-    mutate(Time = mdy_hms(Time)) %>% # covert time
-    drop_na() #omiting NAs
-  
-  # subsetting file names  
-  subset.filenames<- sub(".*/", "", experiment.data$File_ID[i])
-  Respo.Data$File_ID <- subset.filenames  
-
-  # Getting the file name without the .csv
-  rename<- sub(".csv","", filenames_final[i])
-  
-  # matching file row to file name 
-  Frow<-which(subset.filenames == experiment.data$File_ID) 
-  
-  # start and stop time for each file name
-  start<- ymd_hms(experiment.data$Respirometry_Start_Time[Frow])
-  stop <-ymd_hms(experiment.data$Respirometry_Stop_Time[Frow])
-  
-  # trimming time from data 
-  Respo.Data <-  Respo.Data %>%
-    filter(Time >= start & Time <= stop) %>% # filter to start and stop time
-    slice(420:n()) %>% # drop first few min
-    mutate(sec = 1:n())  # create a new column for every second for the regression
-    
-  Respo.Data.orig<-Respo.Data # saving original data prior to thinning
-  
-  #Creating a new table prior to prepare to thin data
-  Respirometry.Tibble<-tibble(Time=as.numeric(), Value=as.numeric(),
-                              Temp=as.numeric(), sec=as.numeric())
-    
-#thinning data by every 20 seconds and placing into table 
-for(j in 1:nrow(Respo.Data)) { # alternative thinning strategy
-    if(j%%20==0){
-      Respirometry.Tibble<-rbind(Respirometry.Tibble, Respo.Data[j,])
-    }
-}
-
-# plotting full data     
-full.plot<- ggplot(Respo.Data.orig, aes(x = sec, y = Value)) +
-    geom_point(color = "cyan3") +
-    labs(x = 'Time (seconds)', y = expression(paste(' O'[2],' (',mu,'mol/L)')),
-      title = "original")
-  
-# plotting thinned data 
-thinned.plot <- ggplot(Respirometry.Tibble, aes(x = sec, y = Value))+
-    geom_point(color = "cyan3")+
-    labs(x = 'Time (seconds)', y = expression(paste(' O'[2],' (',mu,'mol/L)')),
-      title = "thinned")
- 
-#bootstrapping technique (Olito et al. 2017)
-Regs <- rankLocReg(xall=Respirometry.Tibble$sec, yall=Respirometry.Tibble$Value, alpha=0.5, method="pc", verbose=TRUE)  
-
-#creates pdf of each individual respiration plot and statistics for each plot
-pdf(paste0(here("Output","Respo_Output","Thinning_Plots"),"/", rename,"thinning.pdf"))
-  
-plot(Regs) # plot the results of the regs bootstrapping technique
-plot(full.plot+thinned.plot) # use patchwork to bring the raw and thinned data together
-dev.off()
-  
-# fill in all the O2 consumption and rate data
-RespoR[i,2:3] <- Regs$allRegs[1,c(4,5)] #inserts slope and intercept in the dataframe
-RespoR[i,1] <- paste0(rename,".csv") #stores the file name
-RespoR[i,4] <- mean(Respirometry.Tibble$Temp, na.rm=T) #stores mean temperature organisms experienced
-  
-}
-
-#writing out data as a CSV
-write_csv(RespoR, here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv")) #saves to location
-
-```
 
 ```{r Reading Respirometry Data and Wrangling Data}
 # Reading and Merging Data 

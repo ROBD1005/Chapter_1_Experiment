@@ -991,27 +991,39 @@ tank_timeseries <- bind_rows(TNK_2, TNK_3, TNK_4, TNK_5, TNK_6, TNK_7, TNK_8, TN
 filtered_timeseries <- tank_timeseries %>%
   group_by(Tank_ID) %>%
   filter(Datetime >= "2022-08-23", #day experiment began - not counting acclimation period
-         Datetime <= "2022-09-02") %>% 
-  mutate(Tide = ifelse(Time > hms("12:00:00") & Time < hms("18:00:00") | 
-                       Time > hms("00:00:00") & Time < hms("06:00:00"),
-                       "Low","High")) %>% # tide columns
+         Datetime <= "2022-09-01") %>% 
+mutate(
+    Tide = case_when(
+      Time > hms("13:00:00") & Time < hms("17:00:00") ~ "Low",
+      Time > hms("01:00:00") & Time < hms("05:00:00") ~ "Low",
+      Time > hms("19:00:00") & Time < hms("23:00:00") ~ "High",
+      Time > hms("07:00:00") & Time < hms("11:00:00") ~ "High",
+      TRUE ~ "Intermediate"  # Add an intermediate tide for transitional periods
+    )
+  ) %>%
   na.omit() %>%
   left_join(mesocosm.metadata)
 
 mesocosm.data <- read_csv(here::here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"))
-mesocosm.data <- mesocosm.data %>%
-  mutate(Datetime = ymd_hms(paste0(Date, "10:00:00"))) %>%
-  select(Datetime, Tank_ID, Temp_Treatment, pH_Treatment, Temp_C_Spot=Temp_C) %>%
+
+#spot check times and values
+mesocosm.data<- mesocosm.data %>%
+  mutate(Datetime = ifelse(pH_Treatment == "Low", 
+                      ymd_hms(paste0(Date, " 10:00:00"), tz = "UTC"), 
+                      ymd_hms(paste0(Date, " 11:00:00"), tz = "UTC")),
+    Datetime = as.POSIXct(Datetime)) %>%
+  select(Datetime, Tank_ID, Temp_C_Spot=Temp_C) %>%
   na.omit()
 
 # join the time series and the spot check data 
 filtered_timeseries <- filtered_timeseries %>%
-  left_join(mesocosm.data, by = c("Datetime", "Tank_ID", "Temp_Treatment", "pH_Treatment")) %>% 
-  mutate(Date = as.Date(Datetime))
+  left_join(mesocosm.data, by = c("Datetime", "Tank_ID")) %>% 
+  mutate(Date = as.Date(Datetime)) %>% 
+  filter(Datetime >= "2022-08-23", #day experiment began - not counting acclimation period
+         Datetime <= "2022-09-01")
 
-# 1. Calculate the difference between spot check and logger value at 10 AM
 difference <- filtered_timeseries %>%
-  filter(hour(Datetime) == 10) %>%
+  filter(!is.na(Temp_C_Spot)) %>%
   group_by(Tank_ID, Date) %>%
   dplyr::summarize(Temp_Diff = mean(Temp_C - Temp_C_Spot, na.rm = TRUE))
 
@@ -1034,17 +1046,45 @@ logger.temp.plot <- ggplot(tank_timeseries_corrected, aes(x = Datetime, y = Temp
   ) +
   theme_minimal() +
   theme(
-    text = element_text(family = "Helvetica", size = 10, color = "black"),
-    legend.title = element_text(size = 10),
+    text = element_text(family = "Helvetica", size = 5, color = "black"),
+    legend.title = element_text(size = 5),
     plot.title = element_text(face = "bold", hjust = 0.5)  # Bold and centered title
   )
 logger.temp.plot
 
+logger.hightide.temp <- tank_timeseries_corrected %>% 
+  filter(Tide == "High") %>%
+    filter(Date != "2022-08-29",
+           Date != "2022-08-27") #water spillage dates (increase in watertemp not experienced)
+
+logger.lowtide.temp.plot <- ggplot(logger.hightide.temp, aes(x = Datetime, y = Temp_C_Corrected)) +
+  geom_point() +
+  geom_hline(aes(yintercept = Temp_Treatment)) +
+  facet_wrap(~Tank_ID) +
+  scale_color_discrete(name = "Tank") +
+  scale_y_continuous(breaks = seq(12, 36, by = 4)) +
+  labs(
+    title = "Mesocosm Temperature Range",
+    x = "Date",
+    y = "Temperature (°C)"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Helvetica", size = 5, color = "black"),
+    legend.title = element_text(size = 5),
+    plot.title = element_text(face = "bold", hjust = 0.5)  # Bold and centered title
+  )
+
+logger.lowtide.temp.plot 
+
+tank_timeseries_corrected <- logger.hightide.temp
+
 # 1. Calculate the mean for each combination of Tank_Treatment and pH_Treatment
 means <- tank_timeseries_corrected %>%
-  filter(pH_Treatment != "Sump", Temp_Treatment != "10") %>%
+  filter(pH_Treatment != "Sump", pH_Treatment != "Air") %>% 
   group_by(Temp_Treatment, pH_Treatment) %>%
-  dplyr::summarize(mean_Temp_C = mean(Temp_C_Corrected, na.rm = TRUE))
+  dplyr::summarize(Mean_Temp_C = mean(Temp_C_Corrected, na.rm = TRUE),
+                   SD_Temp_C = sd(Temp_C_Corrected, na.rm = TRUE))
 
 # 2. Compute the IQR for each combination
 iqr_values <- tank_timeseries_corrected %>%
@@ -1059,11 +1099,51 @@ filtered_data <- tank_timeseries_corrected %>%
   filter(Temp_C_Corrected >= Q1 - 1.5 * IQR, Temp_C_Corrected <= Q3 + 1.5 * IQR)
 
 filtered_means <- filtered_data %>%
+  filter(pH_Treatment != "Sump", pH_Treatment != "Air") %>%
+  filter(Tide == "High") %>%
   group_by(Temp_Treatment, pH_Treatment) %>%
-  dplyr::summarize(mean_Temp_C = mean(Temp_C_Corrected, na.rm = TRUE))
+  dplyr::summarize(Mean_Temp_C = mean(Temp_C_Corrected, na.rm = TRUE))
+
+write_csv(filtered_means, here::here("Data", "Mesocosm_Data", "Mesocosm_Temp_Filtered_Means.csv"))
+write_csv(means, here::here("Data", "Mesocosm_Data", "Mesocosm_Temp_Means.csv"))
 
 print(filtered_means)
 print(means)
+ 
+means <- means %>% 
+  mutate(Temp_Treatment= case_when(
+    pH_Treatment == "Low" ~ Temp_Treatment - 0.2,
+    pH_Treatment == "Ambient" ~ Temp_Treatment + 0.2
+  ))
+
+# First, create a data frame with the y-intercepts and corresponding colors
+hline_data <- data.frame(
+  yintercept = seq(12, 26, by = 2),
+  Temp_Treatment = seq(12, 26, by = 2)  # This should match your Temp_Treatment variable
+)
+
+# Then map the colors to this new data within geom_hline()
+mesocosm_plot_temp_pub <- ggplot(means, aes(x = Temp_Treatment, y = Mean_Temp_C)) +
+  geom_point(aes(color = as.numeric(Temp_Treatment)), size = 2) +
+  geom_errorbar(
+    aes(ymin = Mean_Temp_C - SD_Temp_C, ymax = Mean_Temp_C + SD_Temp_C, color = as.numeric(Temp_Treatment)),
+    width = 0.1,
+    size = 0.75
+  ) +
+  scale_color_gradient(low = "#FFEC8B", high = "#CD3333", name = "Temp (°C)", limits = c(10, 30), breaks = seq(10, 30, by = 4)) +
+  scale_x_continuous(breaks = seq(12, 26, by = 2), limits = c(10, 28)) +
+  scale_y_continuous(breaks = seq(12, 26, by = 2), limits = c(10, 29)) +
+  geom_hline(data = hline_data, aes(yintercept = yintercept, color = as.numeric(Temp_Treatment)), linetype = "dashed") +
+  labs(x = "Temperature Treatment", y = "Mean Temp (°C)", color = "Temp (°C)") +
+  theme_classic() +
+  theme(
+    text = element_text(family = "Times New Roman", size = 12),
+    axis.title = element_text(size = 12),
+    legend.position = "right"
+  )
+
+plot(mesocosm_plot_temp_pub)
+
 ```
 
 ```{r}
