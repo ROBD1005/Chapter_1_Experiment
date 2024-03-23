@@ -19,7 +19,7 @@ library(dplyr)
 library(ggplot2)
 library(knitr)
 library(ggsignif)
-
+library(respirometry)
 ```
 
 
@@ -284,7 +284,7 @@ mesocosm.data <- read_csv(here::here("Data", "Mesocosm_Data", "Completed_Mesocos
 #summary statistics for pH by treatment
 ph.means <- mesocosm.data %>%
   group_by(pH_Treatment) %>%
-  dplyr::summarize(Mean_pH = mean(pH, na.rm = TRUE),
+  dplyr::summarize(Mean_pH = mean_pH(pH, na.rm = TRUE), #used to average pH nased on H+ ions
             Sd_pH = sd(pH, na.rm = TRUE))
 
 print(ph.means)
@@ -370,7 +370,7 @@ summary_data <- mesocosm.data %>%
     SD_Conductivity = sd(Conductivity, na.rm = TRUE) / sqrt(n()),
     
     # Calculate mean and standard deviation for pH
-    Mean_pH = mean(pH, na.rm = TRUE),
+    Mean_pH = mean_pH(pH, na.rm = TRUE),
     SD_pH = sd(pH, na.rm = TRUE) / sqrt(n()),
     
     # Calculate mean and standard deviation for TA
@@ -615,7 +615,7 @@ pH_Temp_data <- summary_data %>%
 # Calculate the overall mean pH
 low_mean_pH <- mesocosm.data %>% 
   filter(pH_Treatment == "Low") %>%
-  dplyr::summarize(Mean_pH = mean(pH, na.rm = TRUE),
+  dplyr::summarize(Mean_pH = mean_pH(pH, na.rm = TRUE),
                    SD_pH = sd(pH, na.rm = TRUE),
                    N = n(),
                    SE = SD_pH / sqrt(N),
@@ -737,14 +737,14 @@ print(anova_result)
 print(tukey_result)
 
 # Filter out rows where pH_Treatment is not equal to "Sump"
-pH_summary_data <- pH_summary_data %>%
+pH_summary_data <- summary_data %>%
   filter(pH_Treatment != "Sump") %>% 
-  select(Mean_pH, Temp_Treatment, pH_Treatment)
+  select(Mean_pH=Mean_pH, Temp_Treatment, pH_Treatment)
 
 pH_summary_data$Temp_Treatment <- as.factor(pH_summary_data$Temp_Treatment)
 pH_summary_data$pH_Treatment <- as.factor(pH_summary_data$pH_Treatment)
 # Perform ANOVA
-anova_result <- aov(Mean_Temp_C ~ Temp_Treatment * pH_Treatment, data = summary_data)
+anova_result <- aov(Mean_pH ~ Temp_Treatment * pH_Treatment, data = pH_summary_data)
 
 # Conduct Tukey's HSD test
 tukey_result <- TukeyHSD(anova_result)

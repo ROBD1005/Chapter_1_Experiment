@@ -27,41 +27,57 @@ library(gtExtras)
 library(gridExtra)
 library(nlstools)
 library(ggpmisc)
+library(respR)
+library(respirometry)
+library(NISTunits)
+library(measurements)
 ```
 
 # Loading Data
 
 ```{r}
 #Reading in organism morphometric data 
-snail.data <- read_csv(here::here("Data", "Snail_Metadata", "Tegula_funebralis_Morphometric_Data.csv")) %>% 
+snail.data <- read_csv(here::here("Data", "Snail_Metadata", "Tegula_funebralis_Morphometric_Data.csv"), show_col_types = FALSE) %>%
   select(Snail_ID:Experiment_End_Date)
 
 #Reading in ash free dry weight data
-snail.afdw.data <- read_csv(here::here("Data", "Snail_Metadata","Tegula_funebralis_AFDW.csv"))%>% 
+snail.afdw.data <- read_csv(here::here("Data", "Snail_Metadata","Tegula_funebralis_AFDW.csv"), show_col_types = FALSE)%>% 
   select(Snail_ID, Dry_Weight_g, Ash_Content_g, Ash_Free_Dry_Weight)
 
 #Reading in respirometry metadata
-respo.metadata <- read_csv(here::here("Data", "Snail_Metadata","Respirometry_Metadata.csv"))
+respo.metadata <- read_csv(here::here("Data", "Snail_Metadata","Respirometry_Metadata.csv"), show_col_types = FALSE)
 
 #Reading in experimental treatment metadata 
-experiment.metadata <- read_csv(here::here("Data", "Snail_Metadata","Experiment_Treatment_Metadata.csv"))
+experiment.metadata <- read_csv(here::here("Data", "Snail_Metadata","Experiment_Treatment_Metadata.csv"), show_col_types = FALSE)
+
+#Reading in experimental treatment metadata 
+experiment.metadata <- read_csv(here::here("Data", "Snail_Metadata","Experiment_Treatment_Metadata.csv"), show_col_types = FALSE)
+
+#joining experimental treatment and snail data 
+experiment.data <- left_join(experiment.metadata, snail.data, by = join_by(Snail_ID))
+
+#joining data and ash free dry weight 
+experiment.data <- left_join(experiment.data, snail.afdw.data, by = join_by(Snail_ID)) 
+
+#joining data and respiration metadata 
+experiment.data <- left_join(experiment.data, respo.metadata, by = join_by(Snail_ID))
 
 #loading tegula icon in
 image=here::here("Images", "Tegula_funebralis_icon.png")
 
 # Reading in Long Term Means 
-long.term.filtered.means <- read_csv(here::here("Data", "Mesocosm_Data", "Mesocosm_Temp_Filtered_Means.csv"))
-long.term.means <- read_csv(here::here("Data", "Mesocosm_Data", "Mesocosm_Temp_Means.csv"))
+long.term.filtered.means <- read_csv(here::here("Data", "Mesocosm_Data", "Mesocosm_Temp_Filtered_Means.csv"), show_col_types = FALSE)
+long.term.means <- read_csv(here::here("Data", "Mesocosm_Data", "Mesocosm_Temp_Means.csv"), show_col_types = FALSE)
 
 #filtering out irresponsible snails & snails not run in respirometry
-experiment.data <- experiment.data %>% 
-  filter(Snail_ID != 36,
-         Snail_ID != 43,
-         Snail_ID != 72,
-         Snail_ID != 61,
+#experiment.data <- experiment.data %>% 
+  #filter(Snail_ID != 36,
+         #Snail_ID != 43,
+         #Snail_ID != 72,
+         #Snail_ID != 61,
          #Snail_ID != 67,
          #Snail_ID != 52
-         ) # mortality (not responsive to forceps)
+         #) # mortality (not responsive to forceps)
 ```
 
 
@@ -87,11 +103,7 @@ snail.data <- snail.data %>%
 # AFDW Comparison
 mean.afdw <- snail.data %>% 
   dplyr::summarize(Mean_AFDW = mean(Ash_Free_Dry_Weight, na.rm = TRUE),
-         Mean_Expected_AFDW = mean(as.numeric(Expected_Ash_Weight), na.rm = TRUE))
-
-```
-
-```{r}
+         Mean_Expected_AFDW = mean(as.numeric(Expected_Ash_Free_Dry_Weight), na.rm = TRUE))
 
 # Exploring Snail Measurement Metrics 
 
@@ -118,12 +130,6 @@ text(x = min(snail.data$Ash_Free_Dry_Weight), y = max(snail.data$Initial_Blotted
 
 # Adding legend for regression line
 legend("topleft", legend = paste("Regression Line (R^2 =", round(rsquared, 3), ")", sep = ""), col = "blue", lty = 1)
-
-```
-
-
-
-```{r}
 
 snail.measurement.data <- experiment.data %>% 
   filter(Identity == 'Treatment')
@@ -191,179 +197,163 @@ cat("Snail Volume Range:", snail.volume.range, "\n")
 cat("Mean Snail Volume:", mean_volume, "\n")
 cat("Standard Deviation:", sd_volume, "\n")
 
+snail.afdw.range <- range(snail.measurement.data$Ash_Free_Dry_Weight)
+mean_afdw <- mean(snail.measurement.data$Ash_Free_Dry_Weight, na.rm = TRUE)
+sd_afdw <- sd(snail.measurement.data$Ash_Free_Dry_Weight, na.rm = TRUE)
 
+cat("Snail AFDW Range:", snail.afdw.range, "\n")
+cat("Mean Snail AFDW:", mean_afdw, "\n")
+cat("Standard Deviation:", sd_afdw, "\n")
 
 ```
 
 
 
-```{r Reading Respirometry Data and Wrangling Data}
-# Reading and Merging Data 
-respirometry.data.summarized <- read_csv(here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv"))
+```{r}
 
-#Empty chamber volume (650 mL)
-Chamber_Volume <- 650
+# Reading and Merging Data 
+respirometry.data.summarized <- read_csv(here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv"), show_col_types = FALSE)
+carbonate.treatment.info <- read_csv(here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"), show_col_types = FALSE)
+temperature.treatment.info <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_Temp_Means.csv"), show_col_types = FALSE)
+
+# Mesocosm Biogeochemistry Data
+#calculates mean_pH based on H^+ pH values, first converted to [H+] then averaged and converted back to a mean pH value 
+carbonate.treatment.info <- carbonate.treatment.info %>%
+  select(Tank_ID, Temp_Treatment, pH_Treatment, pH) %>% 
+  group_by(Temp_Treatment, pH_Treatment) %>%
+  summarize(mean_pH=respirometry::mean_pH(pH, na.rm = FALSE))
+
+treatment.info <- left_join(carbonate.treatment.info, temperature.treatment.info, by = join_by(Temp_Treatment, pH_Treatment)) %>% 
+  select(Temp_Treatment, pH_Treatment, mean_pH, Mean_Temp_C)
 
 #Joining respiration data with the data 
-joined.respo.dataset <- left_join(experiment.data, respirometry.data.summarized, by = join_by(File_ID))
+joined.respo.dataset <- left_join(experiment.data, respirometry.data.summarized, by = join_by(File_ID)) %>% 
+  filter(pH_Treatment != "Sump") %>% 
+  select(Snail_ID, Temp_Treatment, pH_Treatment, Intercept, umolO2.L.sec, Temp.C, Salinity, Pressure, Organism_Volume_mL,
+         Ash_Free_Dry_Weight, Initial_Blotted_Wet_Mass_g, Tank_ID, Identity, File_ID)
 
+#Joining treament data with the respiration data
+treatment.respo.dataset <- left_join(joined.respo.dataset, treatment.info, by = join_by(Temp_Treatment, pH_Treatment))
 
-#calcucating chamber volumes
-joined.respo.dataset <- joined.respo.dataset %>%              
-mutate(Volume_mL=Chamber_Volume-Organism_Volume_mL, #calculating chamber water volume by subtracting organism volume
-       umolO2.sec = (umolO2.L.sec/1000)*Volume_mL) #converting from L to mL and standardizing to water volume
+#Removing snails that faced mortality during the experiment
+filtered.respo.dataset <- treatment.respo.dataset %>% 
+  filter(Snail_ID != 43 & 36 & 72 & 52) %>% 
+  na.omit()
 
-# Calculating control respiration rates
-respo.control.data <- joined.respo.dataset %>%
-  filter(Identity=="Control") %>% #filtering for blanks
-  group_by(Temp_Treatment, pH_Treatment, Identity) %>% #grouping by treatments
-  summarise(umolO2.sec = mean(umolO2.sec, na.rm=TRUE)) %>% #means for blanks and organisms 
+#calculating chamber water volume by subtracting organism volume from chamber volume
+respo.dataset <- filtered.respo.dataset %>%    
+  # correcting for oxygen concentration at the start of the observation period (time zero) within the sealed chamber
+  mutate(Volume_mL = 650-Organism_Volume_mL, #Volume of water in chamber = full chamber volume (650 mL) of water minus organism volume
+         Volume_L = conv_multiunit(Volume_mL, "mL", "L"), #converting from mL to L (/1000)
+         #Subtracting Initial Oxygen Content in the Chamber from Seawater (to correct for bubbles - not necessary)
+         #mLO2.L = conv_o2(Intercept, from="umol_per_l", to="ml_per_l", temp=Temp.C, sal=Salinity, atm_pres=Pressure), #calculating the volume of oxygen in the chamber
+         #Oxygen_Volume = Volume_L - mLO2.L, #subtracting initial oxygen content in the chamber
+         #Volume_L = correct_bubble(resp_vol=Volume_L, bubble_vol=mLO2.L, temp = Temp.C, sal = Salinity, atm_pres = Pressure), #correcting the volume of water in the chamber minus the volume of oxygen
+         umolO2.sec = umolO2.L.sec*Volume_L) #standardizing to umolO2/sec
+
+# Filtering control respiration rates
+respo.control.data <- respo.dataset %>%
+  filter(Identity=="Control")
+
+# Checking to see if there are differences in respiration between pH treatments and temp tratments (temp significant)
+#aov_result <- aov(umolO2.sec ~ Temp_Treatment * pH_Treatment, data = respo.control.data)
+#summary(aov_result)
+
+respo.control.data <- respo.control.data %>% 
+  group_by(Temp_Treatment, pH_Treatment, Identity) %>% #grouping by treatments and control identity
+  mutate(umolO2.sec = mean(umolO2.sec, na.rm=TRUE)) %>% #means for blank seawater respiration 
   select(blank.rate = umolO2.sec) #selecting for only blank rates
 
-#joining summarized control respiration data to full respiration dataset 
-respo.dataset <- left_join(joined.respo.dataset, respo.control.data)
+#calorific coefficients used to convert 
+#Substrate	J/mg O2	  J/ml O2	  J/mmol O2	     Ref
+#Carbs   	14.77	      21.06 	  481.86	       Ivlev 1935; Elliot & Davison 1975; Gnaiger 1983 
+#Lipid	  13.73	      19.58	    447.93	       Ivlev 1935; Elliot & Davison 1975; Gnaiger 1983
+#Protein	13.61	      19.41	    444.01	       Ivlev 1935; Elliot & Davison 1975; Gnaiger 1983
+#Average	14.10	      20.11	    460.00         Ivlev 1935; Elliot & Davison 1975; Gnaiger 1983
 
-# converting from umolO2/sec to umolO2/hour and normalizing to ash free dry weight (grams)
+#joining summarized control respiration data to full respiration dataset 
+respo.dataset <- left_join(respo.dataset, respo.control.data)
+
+# Conversions and normalizations for rates 
 respo.rates.dataset <- respo.dataset %>% 
   mutate(
-    umolO2.sec.uncorrected = -(umolO2.sec),
-    umolO2.sec.corrected = -(umolO2.sec - blank.rate), # subtract the blank rates from the raw rates
-    umolO2.gram.hr.uncorrected = umolO2.sec.uncorrected * 3600 / Ash_Free_Dry_Weight,
-    umolO2.gram.hr.corrected = umolO2.sec.corrected * 3600 / Ash_Free_Dry_Weight) %>% 
-  #correcting for negative respiration rates and for values that fall below 0
-  mutate(
-    umolO2.gram.hr.corrected = ifelse(umolO2.gram.hr.corrected < 0, 0, umolO2.gram.hr.corrected), 
-    umolO2.gram.hr.uncorrected = ifelse(umolO2.gram.hr.uncorrected < 0, 0, umolO2.gram.hr.uncorrected)) %>% 
-  filter(Identity == "Treatment") %>% 
-  select(Snail_ID, Temp_Treatment, pH_Treatment, umolO2.sec.uncorrected, umolO2.sec.corrected, umolO2.gram.hr.corrected,  
-         umolO2.gram.hr.uncorrected, Temp.C, Volume_mL)
+    
+    # calculating uncorrected and corrected respiration rates
+    #umolO2.sec.uncorrected = -(umolO2.sec),
+    umolO2.sec = -(umolO2.sec - blank.rate), # subtract the blank rates from the raw rates
 
-as_tibble(respo.rates.dataset)
+    # converting from umolO2/sec to umolO2/hour
+    #umolO2.hr.uncorrected = (umolO2.sec.uncorrected, from="umol_O2 / sec", to="umol_O2 / hr"),
+    umolO2.hr=conv_resp_unit(umolO2.sec, from="umol_O2 / sec", to="umol_O2 / hr"),
+
+    # converting from umolO2/hr to mLO2/hr
+    mL_O2.hr = conv_resp_unit(umolO2.hr, from="umol_O2 / hr", to="ml_O2 / hr"),
+    uL_O2.hr =conv_resp_unit(mL_O2.hr, "mL", "uL"), # converting from mL to uL
+    mmolO2.hr = conv_resp_unit(umolO2.hr, "umol", "mmol"), # converting from umol to mmol
+    molO2.hr = conv_resp_unit(umolO2.hr, "umol", "mol"), # converting from umol to mol
+    
+    # normalizing to ash free dry weight (grams)
+    #umolO2.gram.hr.uncorrected = umolO2.hr.uncorrected / Ash_Free_Dry_Weight,
+    umolO2.gram.hr = umolO2.hr / Ash_Free_Dry_Weight, 
+    mmolO2.gram.hr = mmolO2.hr / Ash_Free_Dry_Weight,
+    molO2.gram.hr = molO2.hr / Ash_Free_Dry_Weight,
+    uL_O2.gram.hr = uL_O2.hr / Ash_Free_Dry_Weight,
+    mL_O2.gram.hr = mL_O2.hr / Ash_Free_Dry_Weight,
+
+    #cellular respiration, oxygen (O2) is consumed to produce energy in the form of adenosine triphosphate (ATP)
+    # C6H12O6 + 6O2 → 6CO2 + 6H2O + energy (as ATP)
+    #Using the calorific coefficient to convert to energy
+    joules.gram.hour = mmolO2.gram.hr * 460.00, #using the average conversion factor 460.00 J/mmol O2
+    kcal.gram.hour = NISTjouleTOkilocal(joules.gram.hour), #converting from Joules to 1 kcal is equal to 4184 Joules
+    
+    # correcting for negative respiration rates and for values that fall below 0
+    #uumolO2.gram.hr.uncorrected = ifelse(umolO2.gram.hr.uncorrected < 0, 0, umolO2.gram.hr.uncorrected)) %>%
+    umolO2.gram.hr = ifelse(umolO2.gram.hr < 0, 0, umolO2.gram.hr),
+    mL_O2.gram.hr = ifelse(mL_O2.gram.hr < 0, 0, mL_O2.gram.hr)) %>% 
+  
+  filter(Identity == "Treatment") %>% 
+  select(-blank.rate, Snail_ID, Ash_Free_Dry_Weight, Temp_Treatment, pH_Treatment, umolO2.hr, uL_O2.hr, umolO2.gram.hr, uL_O2.gram.hr,
+         molO2.gram.hr, mL_O2.gram.hr, joules.gram.hour, kcal.gram.hour, Temp.C, Salinity, Pressure, Volume_mL, Tank_ID, Mean_Temp_C, mean_pH, File_ID) 
+
+ as_tibble(respo.rates.dataset)
 
 write_csv(respo.rates.dataset, here("Data", "Thinned_Respirometry_Data", "Respiration.Rates.Dataset.csv"))
-```
 
-```{r}
-
-# umolO2 per second to joules per second corrected for background respiration (Organism respiration- Background respiration, no weight normalization)
-umol.O2.per.second.per.snail <- respo.rates.dataset %>% 
-  select(Snail_ID, umolO2.sec.corrected, Temp_Treatment, pH_Treatment, Temp.C) %>% 
-  mutate(umolO2.sec.corrected  = umolO2.sec.corrected  * 1000) #converst to L
-
-#conversion of micro moles of O2 per second to micro moles of O2 per hour
-umol.O2.per.hour.per.snail <- umol.O2.per.second.per.snail %>% 
-  mutate(mmolO2.hr.per.snail = umolO2.sec.corrected * 3600)
-  
-#conversion of micro moles of O2 per hour to moles of O2 per hour
-mol.O2.per.hour.per.snail <- umol.O2.per.hour.per.snail %>% 
-  mutate(molO2.hr.per.snail = mmolO2.hr.per.snail/1000000)
-
-#moles of O2 per hour (mol/hr) times the molecular weight of oxygen (32 g/mol) to get grams of O2 per hour
-gram.O2.per.hour.per.snail <- mol.O2.per.hour.per.snail %>% 
-  mutate(g.O2.hr.per.snail = molO2.hr.per.snail * 32)
-
-#convert from gram of O2 to milligrams of O2
-mg.O2.per.hour.per.snail <- gram.O2.per.hour.per.snail %>% 
-  mutate(mg.O2.hr.per.snail = molO2.hr.per.snail * 1000)
-
-#cellular respiration, oxygen (O2) is consumed to produce energy in the form of adenosine triphosphate (ATP)
-# C6H12O6 + 6O2 → 6CO2 + 6H2O + energy (as ATP)
-
-# Define the conversion factor
-conversion_factor <- 14.14 # Energy equivalent of 1 mg of O2 consumed (Elliott and Davison, 1975)
-
-#multiply milligram of O2 per hr times conversion factor of 14.14 J per mg O2− (Elliott and Davison, 1975) to get joules O2 per hour
-#grams of O2 per hour (g/hr) times the energy produced per gram of oxygen 
-joules.per.hour.per.snail <- mg.O2.per.hour.per.snail %>% 
-  mutate(J.hr.per.snail = mg.O2.hr.per.snail * conversion_factor)
-
-#joules per hour per snail to kilojoules per hour per snail
-kj.per.hour.per.snail <- joules.per.hour.per.snail %>% 
-  mutate(kJ.hr.per.snail = J.hr.per.snail / 1000) #thsi is in mL
-
-joule.rates.dataset <- kj.per.hour.per.snail
-```
-
-
-
-
-
-
-
-
-```{r }
-
-# umolO2 per second to joules per second corrected for background respiration (Organism respiration- Background respiration, no weight normalization)
-umol.O2.per.second.per.snail <- respo.rates.dataset %>% 
-  select(Snail_ID, umolO2.sec.corrected, Temp_Treatment, pH_Treatment, Temp.C) %>% 
-  mutate(umolO2.sec.corrected  = umolO2.sec.corrected  * 1000) #converst to L
-
-#conversion of micro moles of O2 per second to micro moles of O2 per hour
-umol.O2.per.hour.per.snail <- umol.O2.per.second.per.snail %>% 
-  mutate(mmolO2.hr.per.snail = umolO2.sec.corrected * 3600)
-  
-#conversion of micro moles of O2 per hour to moles of O2 per hour
-mol.O2.per.hour.per.snail <- umol.O2.per.hour.per.snail %>% 
-  mutate(molO2.hr.per.snail = mmolO2.hr.per.snail/1000000)
-
-#moles of O2 per hour (mol/hr) times the molecular weight of oxygen (32 g/mol) to get grams of O2 per hour
-gram.O2.per.hour.per.snail <- mol.O2.per.hour.per.snail %>% 
-  mutate(g.O2.hr.per.snail = molO2.hr.per.snail * 32)
-
-#convert from gram of O2 to milligrams of O2
-mg.O2.per.hour.per.snail <- gram.O2.per.hour.per.snail %>% 
-  mutate(mg.O2.hr.per.snail = molO2.hr.per.snail * 1000)
-
-#cellular respiration, oxygen (O2) is consumed to produce energy in the form of adenosine triphosphate (ATP)
-# C6H12O6 + 6O2 → 6CO2 + 6H2O + energy (as ATP)
-
-# Define the conversion factor
-conversion_factor <- 14.14 # Energy equivalent of 1 mg of O2 consumed (Elliott and Davison, 1975)
-
-#multiply milligram of O2 per hr times conversion factor of 14.14 J per mg O2− (Elliott and Davison, 1975) to get joules O2 per hour
-#grams of O2 per hour (g/hr) times the energy produced per gram of oxygen 
-joules.per.hour.per.snail <- mg.O2.per.hour.per.snail %>% 
-  mutate(J.hr.per.snail = mg.O2.hr.per.snail * conversion_factor)
-
-#joules per hour per snail to kilojoules per hour per snail
-kj.per.hour.per.snail <- joules.per.hour.per.snail %>% 
-  mutate(kJ.hr.per.snail = J.hr.per.snail / 1000) #thsi is in mL
-
-joule.rates.dataset <- kj.per.hour.per.snail %>% 
-  mutate(Temp_Treatment=as.factor(Temp_Treatment),
-         pH_Treatment=as.factor(pH_Treatment)) #converting to joules per second
+#Paine 1971 ~206 uL O2/g/hr @ 13.5 C ~ 413 uL O2/g/hr @ 23 C (+ or - 66 uL O2/g/hr)
 
 ```
 
 ```{r}
+
+
+joule.rates.dataset <- respo.rates.dataset %>% 
+  mutate(Temp_Treatment=as.factor(Temp_Treatment), pH_Treatment=as.factor(pH_Treatment)) %>%
+  select(Snail_ID, Temp_Treatment, pH_Treatment, kcal.gram.hour, joules.gram.hour, Temp.C, Salinity, Pressure, Volume_mL, Tank_ID, mean_pH)
+
 # Perform a two-way ANOVA
-anova_result <- anova(lm(J.hr.per.snail ~ Temp_Treatment * pH_Treatment, data = joule.rates.dataset))
+anova_result <- anova(lm(joules.gram.hour ~ Temp_Treatment * pH_Treatment, data = joule.rates.dataset))
 
 # Print the ANOVA table
 print(anova_result)
 # significant p value (1.101e-08 ***) for temp treatment but not for ph treatment (0.1235)
 
 # Perform a Tukey's HSD test
-tukey_result <- TukeyHSD(aov(J.hr.per.snail ~ Temp_Treatment * pH_Treatment, data = joule.rates.dataset))
+tukey_result <- TukeyHSD(aov(joules.gram.hour ~ Temp_Treatment * pH_Treatment, data = joule.rates.dataset))
 
 # Print the Tukey's HSD test
 print(tukey_result)
-
-```
-
-```{r}
 
 # joule rate summary statistics 
 joule.rates.summary <- joule.rates.dataset %>%
   filter(pH_Treatment != "Sump") %>%
   group_by(Temp_Treatment, pH_Treatment) %>%
   summarize(
-    Mean_joule_sec = mean(J.hr.per.snail),
-    Median_joule_sec = median(J.hr.per.snail),
-    Min_joule_sec = min(J.hr.per.snail),
-    Max_joule_sec = max(J.hr.per.snail),
-    SD_joule_sec = sd(J.hr.per.snail),
-    SE_joule_sec = sd(J.hr.per.snail) / sqrt(n()),
+    Mean_joule_sec = mean(joules.gram.hour),
+    Median_joule_sec = median(joules.gram.hour),
+    Min_joule_sec = min(joules.gram.hour),
+    Max_joule_sec = max(joules.gram.hour),
+    SD_joule_sec = sd(joules.gram.hour),
+    SE_joule_sec = sd(joules.gram.hour) / sqrt(n()),
     N_joule_sec = n()
   ) 
   
@@ -385,59 +375,237 @@ difference_mean_joule_sec <- pivot_mean_joule_sec %>%
   mutate(Percent_Difference=paste0(Percent_Difference,"%"))
 
 # Rename columns
-colnames(difference_mean_joule_sec) <- c("Temperature Treatment", "Ambient Energy Expenditure (J/h)", "Low Energy Expenditure (J/h)", "Percent Difference")
+colnames(difference_mean_joule_sec) <- c("Temperature Treatment", "Ambient Energy Expenditure (J g^−1 h^−1)", "Low Energy Expenditure (J g^−1 h^−1)", "Percent Difference")
 
 #  "Low" has a lower value than "Ambient," and the difference is expressed as a negative percentage of how much lower "Low" is compared to "Ambient." (this is without weight normalization)
-
 
 # Print the resulting data frame
 print(difference_mean_joule_sec)
 
 # Export the table
-write.csv(difference_mean_joule_sec, "percent_difference_table.csv", row.names = FALSE)
+write.csv(difference_mean_joule_sec, here::here("Output", "percent_difference_table.csv"), row.names = FALSE)
 ```
 
-```{r}
 
-experiment.data <- read_csv(here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_TA_pH.csv")) %>% 
+```{r}
+# Calculating Metablic Information from Respiration Rates 
+
+  # Reading in data for analysis 
+  ambient.pH.respo <- respo.rates.dataset %>% 
+  filter(pH_Treatment == "Ambient") 
+
+  # Reading in carbonate data for analysis
+  Carb <- read_csv(here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv")) %>% 
+  select(Temp_Treatment, pH_Treatment, TA, DO_mgL)
+
+  
+  # Total Alkalinity to find the mean TA encountered
+  TA <- Carb %>%
+  group_by(Temp_Treatment, pH_Treatment) %>%
+  summarize(TA = mean(TA, na.rm = TRUE))
+  
+  ambient.pH.respo <- ambient.pH.respo %>% 
+    left_join(TA, by = join_by(Temp_Treatment, pH_Treatment)) 
+
+  # Calculating Q10 values for respiration rates
+  Ambient_pH_Q10 <- Q10(R_vec=ambient.pH.respo$umolO2.gram.hr, T_vec=ambient.pH.respo$umolO2.gram.hr, model = TRUE) #larger temperature sensitivity
+  
+  # Calculate the metabolic scaling coefficient
+  Ambient_pH_b <- calc_b(mass=ambient.pH.respo$Ash_Free_Dry_Weight, MO2=ambient.pH.respo$umolO2.gram.hr, method = "nls", plot = "linear", b0_start = 1)
+
+  # Calculate E - the slope of the relationship between-ln(x) and 1/(kB T), where kB is the Boltzmann constant expressed in eV/K.
+  Ambient_pH_E <- calc_E(x=ambient.pH.respo$umolO2.gram.hr, temp=ambient.pH.respo$Temp.C)
+  
+  # Respiratory Quotient ratio of CO2 produced to O2 consumed.
+  ambient_pH_RQ <- RQ(o2=ambient.pH.respo$umolO2.hr, o2_unit="umol_per_l", pH=ambient.pH.respo$mean_pH, TA=ambient.pH.respo$TA,
+     temp=ambient.pH.respo$Temp.C, sal=ambient.pH.respo$Salinity, atm_pres=ambient.pH.respo$Pressure)
+  
+  # Predicts the pH of seawater after a defined amount of oxygen consumption. #80% O^2 % for the mean O^2 mgL at 26 degrees C
+  ambient_predicted_pH <- predict_pH(start_o2 = 100, end_o2 = 90, start_pH=7.9, temp=ambient.pH.respo$Temp.C, sal=ambient.pH.respo$Salinity, 
+                                 RQ = 1, TA = ambient.pH.respo$TA)
+
+  
+  # Used to Predict Biological Parameters
+  #adj_by_temp(meas_temp = ambient.pH.respo$Temp.C, meas_x = ambient.pH.respo$umolO2.gram.hr, temp_new = 23,
+              #method = "Q10", Q10 = Ambient_pH_Q10$Q10, E = Ambient_pH_E, show_coef = TRUE, plot_fit = TRUE)
+  
+  low.pH.respo <- respo.rates.dataset %>% 
+  filter(pH_Treatment == "Low") %>% 
+  left_join(TA, by = join_by(Temp_Treatment, pH_Treatment))
+
+  #calculating Q10 values for respiration rates
+  low_pH_Q10 <- Q10(R_vec=low.pH.respo$umolO2.gram.hr, T_vec=low.pH.respo$umolO2.gram.hr, model = TRUE) 
+  
+  #Calculate the metabolic scaling coefficient
+  low_pH_b <- calc_b(mass=low.pH.respo$Ash_Free_Dry_Weight, MO2=low.pH.respo$umolO2.gram.hr, method = "nls", plot = "linear", b0_start = 1)
+
+  #Calculate E - the slope of the relationship between-ln(x) and 1/(kB T), where kB is the Boltzmann constant expressed in eV/K.
+  low_pH_E <- calc_E(x=low.pH.respo$umolO2.gram.hr, temp=low.pH.respo$Temp.C)
+  
+  # Respiratory Quotient ratio of CO2 produced to O2 consumed.
+  low_pH_RQ <-RQ(o2=low.pH.respo$umolO2.hr, o2_unit="umol_per_l", pH=low.pH.respo$mean_pH, TA=low.pH.respo$TA,
+     temp=low.pH.respo$Temp.C, sal=low.pH.respo$Salinity, atm_pres=low.pH.respo$Pressure)
+  
+  #Predicts the pH of seawater after a defined amount of oxygen consumption. #80% O^2 % for the mean O^2 mgL at 26 degrees C
+  low_predicted_pH <- predict_pH(start_o2 = 100, end_o2 = 90, start_pH=7.6, temp=low.pH.respo$Temp.C, sal=low.pH.respo$Salinity, 
+                                 RQ = 1, TA = low.pH.respo$TA)
+  
+  # Predict Biological Parameters 
+  #adj_by_temp(meas_temp = ambient.pH.respo$Temp.C, meas_x = ambient.pH.respo$umolO2.gram.hr, temp_new = 23,
+              #method = "Q10", Q10 = low_pH_Q10$Q10, E = low_pH_E, show_coef = TRUE, plot_fit = TRUE)
+
+# Paine 1971 Q10 of 2.64 for all ambient temperatures, and an RQ of 0.85 
+
+# Example placeholders for your calculated values - replace these with your actual results
+ambient_pH_Q10_value <- Ambient_pH_Q10$Q10
+ambient_pH_b_value <- Ambient_pH_b$b
+ambient_pH_E_value <- Ambient_pH_E
+ambient_pH_RQ_value <- mean(ambient_pH_RQ)
+
+low_pH_Q10_value <- low_pH_Q10$Q10
+low_pH_b_value <- low_pH_b$b
+low_pH_E_value <- low_pH_E
+low_pH_RQ_value <- mean(low_pH_RQ)
+
+# Create a dataframe to store the values in a tabular format
+parameters_table <- data.frame(
+  Parameter = c("Q10", "Metabolic Scaling Coefficient b", "E", "Respiratory Quotient (RQ)"),
+  Ambient_pH = c(ambient_pH_Q10_value, ambient_pH_b_value, ambient_pH_E_value, ambient_pH_RQ_value),
+  Low_pH = c(low_pH_Q10_value, low_pH_b_value, low_pH_E_value, low_pH_RQ_value)
+)
+
+# Print the table
+print(parameters_table)
+write_csv(parameters_table, here("Output", "Metabolic_Parameters.csv"))
+```
+
+# Thermal Performance Curve Analysis 
+
+```{r}
+# Reading and preprocessing data
+experiment.data <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_Summary_Statistics.csv"), show_col_types = FALSE) %>% 
   mutate(Temp_Treatment = as.factor(Temp_Treatment),
          pH_Treatment = as.factor(pH_Treatment)) %>% 
   filter(pH_Treatment != "Sump")
 
-joule.rates.dataset <- left_join(experiment.data, joule.rates.dataset, by = c("Temp_Treatment", "pH_Treatment"))
+respo.rates.dataset <- respo.rates.dataset %>% 
+  mutate(Temp_Treatment = as.factor(Temp_Treatment),
+         pH_Treatment = as.factor(pH_Treatment))
+
+respo.rates.dataset.joined <- left_join(experiment.data, respo.rates.dataset, by = c("Temp_Treatment", "pH_Treatment"))
+
+# Selecting and renaming necessary columns
+respo.rates.tpc <- respo.rates.dataset.joined %>% 
+  select(Snail_ID, Temp_Treatment, pH_Treatment, Temp.C, umolO2.gram.hr) %>%
+  rename(rate = umolO2.gram.hr, temp = Temp.C)
+
+```
+
+
+```{r}
+# Splitting data by pH treatment
+low.pH <- filter(respo.rates.tpc, pH_Treatment == 'Low')
+high.pH <- filter(respo.rates.tpc, pH_Treatment == 'Ambient')
+
+# Model fitting function - to be applied for both low and high pH data
+fit_model <- function(data) {
+  start_vals <- get_start_vals(data$temp, data$rate, model_name = 'sharpeschoolhigh_1981')
+  
+  nls_multstart(
+    rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref = 20),
+    data = data,
+    iter = c(3, 3, 3, 3),
+    start_lower = start_vals - 10,
+    start_upper = start_vals + 10,
+    lower = get_lower_lims(data$temp, data$rate, model_name = 'sharpeschoolhigh_1981'),
+    upper = get_upper_lims(data$temp, data$rate, model_name = 'sharpeschoolhigh_1981'),
+    supp_errors = 'Y',
+    control = nls.lm.control(maxiter = 1000),
+    convergence_count = FALSE
+  )
+}
+
+# Fitting models
+sharpe_schoolfield_mod_low <- fit_model(low.pH)
+sharpe_schoolfield_mod_high <- fit_model(high.pH)
+
+# Summarizing model fits
+summary(sharpe_schoolfield_mod_low)
+summary(sharpe_schoolfield_mod_high)
+
+# Predicting using the fitted models
+# Generate a sequence of temperatures for prediction
+temp_seq <- seq(min(respo.rates.tpc$temp), max(respo.rates.tpc$temp), length.out = 100)
+
+# Make predictions for both models
+preds_low <- augment(sharpe_schoolfield_mod_low, newdata = data.frame(temp = temp_seq))
+preds_high <- augment(sharpe_schoolfield_mod_high, newdata = data.frame(temp = temp_seq))
+
+# Combine predictions for plotting
+combined_preds <- bind_rows(
+  mutate(preds_low, pH_Treatment = 'Low'),
+  mutate(preds_high, pH_Treatment = 'Ambient')
+)
+
+# Plotting the combined predictions
+ggplot(combined_preds, aes(x = temp, y = .fitted, color = pH_Treatment)) +
+  geom_line() +
+  theme_bw() +
+  labs(
+    x = 'Temperature (ºC)',
+    y = 'Respiration Rate (µmol g⁻¹ hr⁻¹)',
+    title = 'Sharpe-Schoolfield Model Fit for TPC Curves'
+  ) +
+  scale_color_manual(values = c('Low' = 'cyan3', 'Ambient' = 'orange'))
+
+# Save model predictions to avoid re-running expensive computations
+saveRDS(combined_preds, here("Output", "sharpe_schoolfield_combined_predictions.rds"))
+```
+
+
+
+
+```{r}
+
+experiment.data <- read_csv(here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"), show_col_types = FALSE) %>% 
+  mutate(Temp_Treatment = as.factor(Temp_Treatment),
+         pH_Treatment = as.factor(pH_Treatment)) %>% 
+  filter(pH_Treatment != "Sump")
+
+respo.rates.dataset <- left_join(experiment.data, respo.rates.dataset, by = c("Temp_Treatment", "pH_Treatment"))
 
 #load in the data set and select for temperature, rate, and pH treatment
-joule.rates.tpc <- joule.rates.dataset %>% 
-  mutate(rate=J.hr.per.snail, temp=Temp.C, temp2=Temp_C) %>%
+respo.rates.tpc <- respo.rates.dataset %>% 
+  mutate(rate=umol.gram.hour, temp=Temp.C, temp2=Temp_C) %>%
   dplyr::select(Temp_Treatment, pH_Treatment, temp, rate) 
 
 # Create a single ggplot graph with both curves
-joule.rates.plot.1 <- ggplot(joule.rates.tpc, aes(temp, rate, color = pH_Treatment)) +
+respo.rates.plot.1 <- ggplot(respo.rates.tpc, aes(temp, rate, color = pH_Treatment)) +
   geom_image(aes(image = image), size = 0.075) +
   theme_bw(base_size = 12) +
   labs(
     x = 'Temperature (ºC)',
-    y = 'Joule/Sec',
-    title = 'Energetic Expenditure Across Temperatures (~7.9 and ~7.7 pH)'
+    y = 'µmol g⁻¹ hr⁻¹',
   ) +
   scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"))
 
 # Create a single ggplot graph with both curves
-joule.rates.plot.2 <- ggplot(joule.rates.tpc, aes(temp2, rate, color = pH_Treatment)) +
+respo.rates.plot.2 <- ggplot(joule.rates.tpc, aes(temp2, rate, color = pH_Treatment)) +
   geom_image(aes(image = image), size = 0.075) +
   theme_bw(base_size = 12) +
   labs(
     x = 'Temperature (ºC)',
-    y = 'Joule/Sec',
-    title = 'Energetic Expenditure Across Temperatures Experimental Temp (~7.9 and ~7.7 pH)'
+    y = 'µmol g⁻¹ hr⁻¹',
   ) +
   scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"))
 
 # Print the combined plot
-print(joule.rates.plot.1)
-print(joule.rates.plot.2)
+print(respo.rates.plot.1)
+print(respo.rates.plot.2)
 
 ```
+
+
 ```{r}
 respo.rates.tpc<- joule.rates.tpc %>% 
   select(temp, rate, pH_Treatment)
@@ -512,7 +680,7 @@ ggplot(combined_preds) +
   theme_bw() +
   labs(
     x = 'Temperature',
-    y = 'Rate',
+    y = 'Respiration Rate (µmol g⁻¹ hr⁻¹)',
     title = 'Sharpe-Schoolfield Model Fit for TPC Curves Low (~7.7) and Ambient (8.0) pH'
   ) +
   scale_color_manual(values = c('Low' = 'cyan3', 'Ambient' = 'orange'))
@@ -579,8 +747,7 @@ boot.low.pH.plot <- ggplot() +
   geom_image(aes(temp, rate, image = image), data = low.pH, size = 0.075, alpha = 0.5) +
   theme_bw(base_size = 12) +
   labs(x = 'Temperature (ºC)',
-       y = 'Energetic Expenditure (J/h)',
-       title = 'Respiration Rate for *Tegula funebralis* at Low pH (pH ~7.7)') +
+       y = 'µmol g⁻¹ hr⁻¹') +
   scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
   scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
   theme(plot.title = element_text(hjust = 0.5))
@@ -653,7 +820,7 @@ boot.high.pH.plot <- ggplot() +
   geom_image(aes(temp, rate, image = image), data = high.pH, size = 0.075, alpha = 0.5) +
   theme_bw(base_size = 12) +
   labs(x = 'Temperature (ºC)',
-       y = 'Energetic Expenditure (J/h)',
+       y = 'µmol g⁻¹ hr⁻¹',
        title = 'Respiration Rate for *Tegula funebralis* at Ambient pH (pH ~7.7)') +
   scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
   scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
@@ -675,10 +842,7 @@ boot.high.pH.plot.predictions <- ggplot() +
 boot.low.pH.plot + boot.low.pH.plot.predictions
 
 # Combine the plots
-boot.high.pH.plot + boot.high.pH.plot.predictions
-
-
-boot.low.pH.predictions + boot.low.pH.plot.predictions
+boot.high.pH.plot + boot.low.pH.plot.predictions
 ```
 
 ```{r}
