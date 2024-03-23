@@ -156,6 +156,9 @@ write_csv(respiration.rates, here("Data", "Thinned_Respirometry_Data", "Respirom
 
 
 ```{r}
+library(measurements)
+library(car)
+
 # Reading and Merging Data 
 respirometry.data.summarized <- read_csv(here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv"), show_col_types = FALSE)
 carbonate.treatment.info <- read_csv(here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"), show_col_types = FALSE)
@@ -165,35 +168,259 @@ temperature.treatment.info <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_T
 #calculates mean_pH based on H^+ pH values, first converted to [H+] then averaged and converted back to a mean pH value 
 carbonate.treatment.info <- carbonate.treatment.info %>%
   select(Tank_ID, Temp_Treatment, pH_Treatment, pH) %>% 
-  group_by(Tank_ID, Temp_Treatment, pH_Treatment) %>%
+  group_by(Temp_Treatment, pH_Treatment) %>%
   summarize(mean_pH=respirometry::mean_pH(pH, na.rm = FALSE))
 
 treatment.info <- left_join(carbonate.treatment.info, temperature.treatment.info, by = join_by(Temp_Treatment, pH_Treatment)) %>% 
-  select(Tank_ID, mean_pH, Mean_Temp_C)
+  select(Temp_Treatment, pH_Treatment, mean_pH, Mean_Temp_C)
 
 #Joining respiration data with the data 
 joined.respo.dataset <- left_join(experiment.data, respirometry.data.summarized, by = join_by(File_ID)) %>% 
   filter(pH_Treatment != "Sump") %>% 
-  select(Snail_ID, Intercept, umolO2.L.sec, Temp.C, Salinity, Pressure, Organism_Volume_mL, Ash_Free_Dry_Weight, Tank_ID, 
-         Identity, File_ID)
+  select(Snail_ID, Temp_Treatment, pH_Treatment, Intercept, umolO2.L.sec, Temp.C, Salinity, Pressure, Organism_Volume_mL,
+         Ash_Free_Dry_Weight, Initial_Blotted_Wet_Mass_g, Tank_ID, Identity, File_ID)
 
 #Joining treament data with the respiration data
-joined.respo.dataset <- left_join(joined.respo.dataset, treatment.info, by = join_by(Tank_ID))
+treatment.respo.dataset <- left_join(joined.respo.dataset, treatment.info, by = join_by(Temp_Treatment, pH_Treatment))
 
-#Joining data and selecting for respiration analysis data
-filtered.respo.dataset <- joined.respo.dataset 
+#Removing snails that faced mortality during the experiment
+filtered.respo.dataset <- treatment.respo.dataset %>% 
+  filter(Snail_ID != c("43", "36", "72")) %>% 
+  na.omit()
 
 #calculating chamber water volume by subtracting organism volume from chamber volume
-joined.respo.dataset <- joined.respo.dataset %>%              
-  mutate(Volume_mL=650-Organism_Volume_mL) 
+respo.dataset <- filtered.respo.dataset %>%    
+  # correcting for oxygen concentration at the start of the observation period (time zero) within the sealed chamber
+  mutate(Volume_mL = 650-Organism_Volume_mL, #Volume of water in chamber = full chamber volume (650 mL) of water minus organism volume
+         Volume_L = conv_multiunit(Volume_mL, "mL", "L"), #converting from mL to L (/1000)
+         #Subtracting Initial Oxygen Content in the Chamber from Seawater (to correct for bubbles - not necessary)
+         #mLO2.L = conv_o2(Intercept, from="umol_per_l", to="ml_per_l", temp=Temp.C, sal=Salinity, atm_pres=Pressure), #calculating the volume of oxygen in the chamber
+         #Oxygen_Volume = Volume_L - mLO2.L, #subtracting initial oxygen content in the chamber
+         #Volume_L = correct_bubble(resp_vol=Volume_L, bubble_vol=mLO2.L, temp = Temp.C, sal = Salinity, atm_pres = Pressure), #correcting the volume of water in the chamber minus the volume of oxygen
+         umolO2.sec = umolO2.L.sec*Volume_L) #standardizing to umolO2/sec
+
+# Filtering control respiration rates
+respo.control.data <- respo.dataset %>%
+  filter(Identity=="Control")
+
+# Checking to see if there are differences in respiration between pH treatments and temp tratments (temp significant)
+#aov_result <- aov(umolO2.sec ~ Temp_Treatment * pH_Treatment, data = respo.control.data)
+#summary(aov_result)
+
+respo.control.data <- respo.control.data %>% 
+  group_by(Temp_Treatment, pH_Treatment, Identity) %>% #grouping by treatments and control identity
+  summarise(umolO2.sec = mean(umolO2.sec, na.rm=TRUE)) %>% #means for blank seawater respiration 
+  select(blank.rate = umolO2.sec) #selecting for only blank rates
+
+#joining summarized control respiration data to full respiration dataset 
+respo.dataset <- left_join(respo.dataset, respo.control.data)
+
+# Conversions and normalizations for rates 
+respo.rates.dataset <- respo.dataset %>% 
+  mutate(
+    
+    # calculating uncorrected and corrected respiration rates
+    #umolO2.sec.uncorrected = -(umolO2.sec),
+    umolO2.sec = -(umolO2.sec - blank.rate), # subtract the blank rates from the raw rates
+
+    # converting from umolO2/sec to umolO2/hour
+    #umolO2.hr.uncorrected = (umolO2.sec.uncorrected, from="umol_O2 / sec", to="umol_O2 / hr"),
+    umolO2.hr=conv_resp_unit(umolO2.sec, from="umol_O2 / sec", to="umol_O2 / hr"),
+
+    # converting from umolO2/hr to mLO2/hr
+    mL_O2.hr = conv_resp_unit(umolO2.hr, from="umol_O2 / hr", to="ml_O2 / hr"),
+    uL_O2.hr =conv_multiunit(mL_O2.hr, "mL", "uL"), 
+    mmolO2.hr = conv_multiunit(umolO2.hr, "umol", "mmol"), # converting from umol to mmol
+    molO2.hr = conv_multiunit(umolO2.hr, "umol", "mol"), # converting from umol to mol
+    
+    # normalizing to ash free dry weight (grams)
+    #umolO2.gram.hr.uncorrected = umolO2.hr.uncorrected / Ash_Free_Dry_Weight,
+    umolO2.gram.hr = umolO2.hr / Ash_Free_Dry_Weight,
+    mmolO2.gram.hr = mmolO2.hr / Ash_Free_Dry_Weight,
+    molO2.gram.hr = molO2.hr / Ash_Free_Dry_Weight,
+    uL_O2.gram.hr = uL_O2.hr / Ash_Free_Dry_Weight,
+    uL_O2.sec = umolO2.sec / Initial_Blotted_Wet_Mass_g,
+    mL_O2.gram.hr = mL_O2.hr / Ash_Free_Dry_Weight,
+
+    # correcting for negative respiration rates and for values that fall below 0
+    #uumolO2.gram.hr.uncorrected = ifelse(umolO2.gram.hr.uncorrected < 0, 0, umolO2.gram.hr.uncorrected)) %>%
+    umolO2.gram.hr = ifelse(umolO2.gram.hr < 0, 0, umolO2.gram.hr),
+    mL_O2.gram.hr = ifelse(mL_O2.gram.hr < 0, 0, mL_O2.gram.hr)) %>% 
+  
+  filter(Identity == "Treatment") %>% 
+  select(-blank.rate, Snail_ID, Ash_Free_Dry_Weight, Temp_Treatment, pH_Treatment, molO2.hr, uL_O2.hr, umolO2.hr, umolO2.gram.hr, uL_O2.gram.hr, molO2.gram.hr,
+         mL_O2.gram.hr, Temp.C, Salinity, Pressure, Volume_mL, Tank_ID, Mean_Temp_C, mean_pH, File_ID) 
+
+ as_tibble(respo.rates.dataset)
+
+write_csv(respo.rates.dataset, here("Data", "Thinned_Respirometry_Data", "Respiration.Rates.Dataset.csv"))
+
+#Paine 1971 ~206 uL O2/g/hr @ 13.5 C ~ 413 uL O2/g/hr @ 23 C (+ or - 66 uL O2/g/hr)
+
+```
 
 
+
+
+```{r}
+
+# Calculating Metablic Information from Respiration Rates 
+
+ambient.pH.respo <- respo.rates.dataset %>% 
+  filter(pH_Treatment == "Ambient") 
+
+  #Calculating Q10 values for respiration rates
+  Q10(R_vec=ambient.pH.respo$umolO2.gram.hr, T_vec=ambient.pH.respo$umolO2.gram.hr, model = TRUE) #larger temperature sensitivity
+  
+  #Calculate the metabolic scaling coefficient
+  calc_b(mass=ambient.pH.respo$Ash_Free_Dry_Weight, MO2=ambient.pH.respo$umolO2.gram.hr, method = "nls", plot = "linear", b0_start = 1)
+
+  
+low.pH.respo <- respo.rates.dataset %>% 
+  filter(pH_Treatment == "Low") 
+
+  #calculating Q10 values for respiration rates
+  Q10(R_vec=low.pH.respo$umolO2.gram.hr, T_vec=low.pH.respo$umolO2.gram.hr, model = TRUE) 
+
+  #Calculate the metabolic scaling coefficient
+  calc_b(mass=low.pH.respo$Ash_Free_Dry_Weight, MO2=low.pH.respo$umolO2.gram.hr, method = "nls", plot = "linear", b0_start = 1)
 
 
 ```
 
 
+
+
 ```{r}
+
+Parameters of Q10 Temperature Coefficient
+Description
+Calculates parameters from Q10 temperature coefficient for chemical or biological systems. This function can be used in two ways. 1. if four of the first five parameters are given (Q10, R1, R2, T1, T2) then the fifth parameter is returned, or 2. if R_vec and T_vec are given, then the best Q10 for those data is returned.
+
+Usage
+Q10(Q10, R1, R2, T1, T2, R_vec, T_vec, model = FALSE)
+Arguments
+Q10	
+factor by which rate changes due to 10 °C increase in temperature.
+
+R1	
+rate 1. Could also be Pcrit or any other temperature-dependent biological parameters.
+
+R2	
+rate 2. Could also be Pcrit or any other temperature-dependent biological parameters.
+
+T1	
+temperature 1 (in °C).
+
+T2	
+temperature 2 (in °C).
+
+R_vec	
+a vector of temperature-dependent values, such as rates (e.g. MO2), Pcrit or other biological parameters.
+
+T_vec	
+a vector of temperature values (in °C).
+
+model	
+logical. If TRUE, then a list is returned which includes an linear model of log10(R_vec) and T_vec fit by stats::lm(). Default is FALSE.
+
+Details
+Q_{10} = (R_2 / R_1) ^ {\frac{10}{T_2 - T_1}}
+
+
+Calculate the metabolic scaling coefficient, b
+Description
+For most organisms, metabolic rate does not scale linearly, but rather according to a power function: MO2 = b0 * M^b. This function estimates the scaling coefficient, b, and normalization constant, b0, given MO2s from different sized individuals.
+
+Usage
+calc_b(mass, MO2, method = "nls", plot = "linear", b0_start = 1)
+Arguments
+mass	
+a vector of animal masses.
+
+MO2	
+a vector of metabolic rates.
+
+method	
+a string defining which method of calculating scaling coefficients to use. Default is "nls", which utilizes a nonlinear least squares regression. If this does not fit your data well, "lm" may also be used, which calculates a linear regression of log10(MO2) ~ log10(mass) with slope and intercept equivalent to b and 10^b0, respectively.
+
+plot	
+a string defining what kind of plot to display. "linear" for linear axes, "log" for log10-scale axes, and "none" for no plot. Default is "linear".
+
+b0_start	
+a single numeric value as the starting point for b0 value determination using the "nls" method. The default is 1 and should work for most situations, but if the "nls" method is not working and you don't want to use the "lm" method, changing the starting b0 value may help. Ignored when method = "lm".
+
+Details
+MO2 = b0 * M^b
+
+where b0 is species-specific normalization constant, M is mass and b is the scaling coefficient.
+
+
+Usage
+calc_E(x, temp)
+Arguments
+x	
+a numeric vector of rate values (e.g. MO2) or any other values (e.g. Pcrit).
+Details
+E is the slope of the relationship between -ln(x) and 1/(kB T), where kB is the Boltzmann constant expressed in eV/K.
+
+temp	
+a numeric vector of temperature values (in Celsius).
+
+------
+Parameters of Q10 Temperature Coefficient
+Description
+Calculates parameters from Q10 temperature coefficient for chemical or biological systems. This function can be used in two ways. 1. if four of the first five parameters are given (Q10, R1, R2, T1, T2) then the fifth parameter is returned, or 2. if R_vec and T_vec are given, then the best Q10 for those data is returned.
+
+Usage
+Q10(Q10, R1, R2, T1, T2, R_vec, T_vec, model = FALSE)
+Arguments
+Q10	
+factor by which rate changes due to 10 °C increase in temperature.
+
+R1	
+rate 1. Could also be Pcrit or any other temperature-dependent biological parameters.
+
+R2	
+rate 2. Could also be Pcrit or any other temperature-dependent biological parameters.
+
+T1	
+temperature 1 (in °C).
+
+T2	
+temperature 2 (in °C).
+
+R_vec	
+a vector of temperature-dependent values, such as rates (e.g. MO2), Pcrit or other biological parameters.
+
+T_vec	
+a vector of temperature values (in °C).
+
+model	
+logical. If TRUE, then a list is returned which includes an linear model of log10(R_vec) and T_vec fit by stats::lm(). Default is FALSE.
+
+Q_{10} = (R_2 / R_1) ^ {\frac{10}{T_2 - T_1}}
+
+
+Usage adj_by_temp( meas_temp, meas_x, temp_new, method = "Q10", Q10, E, show_coef = FALSE, plot_fit = TRUE )
+Predict pH post-respiration
+Description
+Predicts the pH of seawater after a defined amount of oxygen consumption.
+
+Usage
+predict_pH(
+  start_o2 = 100,
+  end_o2,
+  start_pH,
+  temp = 25,
+  sal = 35,
+  RQ = 1,
+  TA = NULL,
+  all_carb = FALSE
+)
+
+
+
 # mean_pH() calculates mean pH on H^+ 
 library(RespR)
 RespR <- Respiration_Data_Unthinned %>% 
@@ -280,147 +507,6 @@ respirometry::calc_E(temp=RespR$temp, x=RespR$oxygen)
 #> t = 20,
 #> S = 30,
 #> P = 1.01)
-```
-
-```{r}
-```
-
-
-```{r}
-# Reading and Merging Data 
-respirometry.data.summarized <- read_csv(here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv"))
-
-#Empty chamber volume (650 mL)
-Chamber_Volume <- 650
-
-#Joining respiration data with the data 
-joined.respo.dataset <- left_join(experiment.data, respirometry.data.summarized, by = join_by(File_ID))
-
-
-#calculating chamber water volume by subtracting organism volume from chamber volume
-joined.respo.dataset <- joined.respo.dataset %>%              
-mutate(Volume_mL=Chamber_Volume-Organism_Volume_mL, 
-       umolO2.sec = (umolO2.L.sec/1000)*Volume_mL) #converting from L to mL and standardizing to water volume
-
-# Calculating control respiration rates
-respo.control.data <- joined.respo.dataset %>%
-  filter(Identity=="Control") %>% #filtering for blanks
-  group_by(Temp_Treatment, pH_Treatment, Identity) %>% #grouping by treatments
-  summarise(umolO2.sec = mean(umolO2.sec, na.rm=TRUE)) %>% #means for blanks and organisms 
-  select(blank.rate = umolO2.sec) #selecting for only blank rates
-
-#joining summarized control respiration data to full respiration dataset 
-respo.dataset <- left_join(joined.respo.dataset, respo.control.data)
-
-# converting from umolO2/sec to umolO2/hour and normalizing to ash free dry weight (grams)
-respo.rates.dataset <- respo.dataset %>% 
-  mutate(
-    umolO2.sec.uncorrected = -(umolO2.sec),
-    umolO2.sec.corrected = -(umolO2.sec - blank.rate), # subtract the blank rates from the raw rates
-    umolO2.gram.hr.uncorrected = umolO2.sec.uncorrected * 3600 / Ash_Free_Dry_Weight,
-    umolO2.gram.hr.corrected = umolO2.sec.corrected * 3600 / Ash_Free_Dry_Weight) %>% 
-  #correcting for negative respiration rates and for values that fall below 0
-  mutate(
-    umolO2.gram.hr.corrected = ifelse(umolO2.gram.hr.corrected < 0, 0, umolO2.gram.hr.corrected), 
-    umolO2.gram.hr.uncorrected = ifelse(umolO2.gram.hr.uncorrected < 0, 0, umolO2.gram.hr.uncorrected)) %>% 
-  filter(Identity == "Treatment") %>% 
-  select(Snail_ID, Temp_Treatment, pH_Treatment, umolO2.sec.uncorrected, umolO2.sec.corrected, umolO2.gram.hr.corrected,  
-         umolO2.gram.hr.uncorrected, Temp.C, Volume_mL)
-
-as_tibble(respo.rates.dataset)
-
-write_csv(respo.rates.dataset, here("Data", "Thinned_Respirometry_Data", "Respiration.Rates.Dataset.csv"))
-```
-
-# For Looping Data (Original Script Created by Dr. Nyssa Silbiger)
-
-```{r}
-
-# Saving file names
-filenames_final <- experiment.data$File_ID
-
-# Importing all individual CSV files
-file.names<-basename(list.files(path = path.p, pattern = "csv$", recursive = TRUE))
-
-#creating data frame to import respiration data into 
-RespoR <- data.frame(matrix(NA, nrow=length(filenames_final), ncol=4)) 
-colnames(RespoR) <- c("File_ID","Intercept", "umolO2.L.sec","Temp.C") #setting column names
-
-for(i in 1:length(filenames_final)) {
-  
-  #reading in each file of raw data 
-  Respo.Data <- read_csv(file.path(path.p, paste0(filenames_final[i])), skip = 1) %>%
-    mutate(File_ID=file.path(path.p, filenames_final[i])) %>% #adding file names
-    dplyr::select(File_ID, Date, Time, Value, Temp) %>% #selecting for variables
-    unite(Date, Time, col="Time", remove=T, sep = " ") %>% #creating datetime
-    mutate(Time = mdy_hms(Time)) %>% # covert time
-    drop_na() #omiting NAs
-  
-  # subsetting file names  
-  subset.filenames<- sub(".*/", "", experiment.data$File_ID[i])
-  Respo.Data$File_ID <- subset.filenames  
-
-  # Getting the file name without the .csv
-  rename<- sub(".csv","", filenames_final[i])
-  
-  # matching file row to file name 
-  Frow<-which(subset.filenames == experiment.data$File_ID) 
-  
-  # start and stop time for each file name
-  start<- ymd_hms(experiment.data$Respirometry_Start_Time[Frow])
-  stop <-ymd_hms(experiment.data$Respirometry_Stop_Time[Frow])
-  
-  # trimming time from data 
-  Respo.Data <-  Respo.Data %>%
-    filter(Time >= start & Time <= stop) %>% # filter to start and stop time
-    slice(420:n()) %>% # drop first few min
-    mutate(sec = 1:n())  # create a new column for every second for the regression
-    
-  Respo.Data.orig<-Respo.Data # saving original data prior to thinning
-  
-  #Creating a new table prior to prepare to thin data
-  Respirometry.Tibble<-tibble(Time=as.numeric(), Value=as.numeric(),
-                              Temp=as.numeric(), sec=as.numeric())
-    
-#thinning data by every 20 seconds and placing into table 
-for(j in 1:nrow(Respo.Data)) { # alternative thinning strategy
-    if(j%%20==0){
-      Respirometry.Tibble<-rbind(Respirometry.Tibble, Respo.Data[j,])
-    }
-}
-
-# plotting full data     
-full.plot<- ggplot(Respo.Data.orig, aes(x = sec, y = Value)) +
-    geom_point(color = "cyan3") +
-    labs(x = 'Time (seconds)', y = expression(paste(' O'[2],' (',mu,'mol/L)')),
-      title = "original")
-  
-# plotting thinned data 
-thinned.plot <- ggplot(Respirometry.Tibble, aes(x = sec, y = Value))+
-    geom_point(color = "cyan3")+
-    labs(x = 'Time (seconds)', y = expression(paste(' O'[2],' (',mu,'mol/L)')),
-      title = "thinned")
- 
-#bootstrapping technique (Olito et al. 2017)
-Regs <- rankLocReg(xall=Respirometry.Tibble$sec, yall=Respirometry.Tibble$Value, alpha=0.5, method="pc", verbose=TRUE)  
-
-#creates pdf of each individual respiration plot and statistics for each plot
-pdf(paste0(here("Output","Respo_Output","Thinning_Plots"),"/", rename,"thinning.pdf"))
-  
-plot(Regs) # plot the results of the regs bootstrapping technique
-plot(full.plot+thinned.plot) # use patchwork to bring the raw and thinned data together
-dev.off()
-  
-# fill in all the O2 consumption and rate data
-RespoR[i,2:3] <- Regs$allRegs[1,c(4,5)] #inserts slope and intercept in the dataframe
-RespoR[i,1] <- paste0(rename,".csv") #stores the file name
-RespoR[i,4] <- mean(Respirometry.Tibble$Temp, na.rm=T) #stores mean temperature organisms experienced
-  
-}
-
-#writing out data as a CSV
-write_csv(RespoR, here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv")) #saves to location
-
 ```
 ```
 
