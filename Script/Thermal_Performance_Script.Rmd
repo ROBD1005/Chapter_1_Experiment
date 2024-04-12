@@ -1,0 +1,1998 @@
+---
+title: "Respirometry_Thermal_Performance_Script"
+output: 
+  pdf_document:
+    latex_engine: pdflatex
+date: "2023-09-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#remotes::install_github("ropensci/NLMR")
+rm(list=ls())
+library(here)
+library(tidyverse)
+library(LoLinR)
+library(rTPC)
+library(nlme)   
+library(nls.multstart)
+library(minpack.lm)
+library(boot)
+library(car)
+library(broom)
+library(patchwork)
+library(ggplot2)
+library(ggimage)
+library(ggrepel)
+library(gt)
+library(gtExtras)
+library(gridExtra)
+library(nlstools)
+library(ggpmisc)
+library(respR)
+library(respirometry)
+library(NISTunits)
+library(measurements)
+library(tidyverse)
+library(car)
+library(tidyverse)
+library(multcomp)
+library(ggimage) 
+library(AICcmodavg)
+library(multiplestressR)
+library(dplyr)
+```
+
+# Loading Data
+
+```{r}
+#Reading in experimental treatment metadata and tank treatment data for the mesocosm experiment 
+experiment.metadata <- read_csv(here::here("Data", "Experiment_Metadata","Experiment_Treatment_Metadata.csv"), show_col_types = FALSE) %>%
+  left_join(read_csv(here::here("Data", "Mesocosm_Data", "mesocosm_summary_table.csv"), show_col_types = FALSE), by = join_by(Temp_Treatment, pH_Treatment))  %>%
+  left_join(read_csv(here::here("Data", "Experiment_Metadata", "Respirometry_Metadata.csv"), show_col_types = FALSE), by = join_by(Snail_ID)) 
+
+#Reading in organism morphometric data and calculating ash free dry weight
+snail.data <- read_csv(here::here("Data", "Snail_Data", "Tegula_funebralis_Morphometric_Data.csv"), show_col_types = FALSE) %>% 
+  left_join(read_csv(here::here("Data", "Snail_Data", "Tegula_funebralis_AFDW.csv"), show_col_types = FALSE), by = join_by(Snail_ID))
+  
+ 
+# Joining experimental treatment and snail data
+experiment.data <- left_join(experiment.metadata, snail.data, by = join_by(Snail_ID))  
+  
+respo.dataset <- read_csv(here::here("Data", "Thinned_Respirometry_Data", "Respiration.Rates.Dataset.csv"), show_col_types = FALSE)
+
+#load in image icon for plots
+image=here::here("Images", "Tegula_funebralis_icon.png")
+
+```
+
+# Analyzing Respirometry Data
+
+# Thermal Performance Curve Analysis 
+
+# To do: MultiplestressR package for effect size calculations 
+
+
+```{r Cleaning and Visualizing Respo Data for rTPC Model Selection}
+
+# Reading in respirometry data
+respo.rates.dataset <- read_csv(here::here("Data", "Thinned_Respirometry_Data", "Converted.Respiration.Rates.Dataset.csv"), show_col_types = FALSE) %>% 
+  mutate(Snail_ID = as.factor(Snail_ID),
+         uLO2_g_hr_wet = as.numeric(uLO2_g_hr_wet),
+         umolO2_g_hr = as.numeric(umolO2_g_hr)) %>% 
+  filter(!is.na(uLO2_g_hr & uLO2_g_hr_wet)) %>% 
+  dplyr::select(Snail_ID, Temp_Treatment, pH_Treatment, Temp.C, Salinity, Pressure, umolO2_g_hr, uLO2_g_hr_wet)
+
+respo.rates.dataset <- respo.rates.dataset$data  %>% 
+  left_join(experiment.data)
+
+# cleaning the Respirometry Data 
+#filtering out irresponsive snails & snails not run in respirometry
+respo.rates.dataset <- respo.rates.dataset %>% 
+  filter(Snail_ID != 36,
+         Snail_ID != 43,
+         Snail_ID != 72,
+         Snail_ID != 61,
+         Snail_ID != 67,
+         Snail_ID != 52
+         ) # mortality (not responsive to forceps)
+
+```
+
+# Select a rate to continue with analysis 
+
+
+```{r}
+respo.rates.dataset <- respo.rates.dataset %>% 
+  mutate(rate = umolO2_g_hr, temp = Temp.C) 
+```
+
+
+```{r}
+
+
+# Q10(Q10, R1, R2, T1, T2, R_vec, T_vec, model = FALSE)
+
+# Calculates parameters from Q10 temperature coefficient for chemical or biological systems.
+
+# uLO2_g_hr ash free dry weight sample measured in lab
+low_pH_uLO2_g_hr_afdw <- respo.rates.dataset %>% 
+  filter(pH_Treatment == "Low") 
+
+ambient_pH_uLO2_g_hr_afdw <- respo.rates.dataset %>% 
+  filter(pH_Treatment == "Ambient") 
+
+# Estimating Q10 values for respirometry data
+low_pH_uLO2_g_hr_afdwQ10 <- respirometry::Q10(R_vec=low_pH_uLO2_g_hr_afdw$rate, T_vec=low_pH_uLO2_g_hr_afdw$temp)
+ambient_pH_uLO2_g_hr_afdwQ10 <- respirometry::Q10(R_vec=ambient_pH_uLO2_g_hr_afdw$rate, T_vec=ambient_pH_uLO2_g_hr_afdw$temp)
+
+low_pH_Q10 <- low_pH_uLO2_g_hr_afdwQ10[1]
+ambient_pH_Q10 <- ambient_pH_uLO2_g_hr_afdwQ10[1]
+
+# Rtemperatures T1 and T2
+LT1 <- low_pH_uLO2_g_hr_afdw$temp[1]   
+LT2 <- low_pH_uLO2_g_hr_afdw$temp[4]  
+AT1 <- ambient_pH_uLO2_g_hr_afdw$temp[1]
+AT2 <- ambient_pH_uLO2_g_hr_afdw$temp[4]
+
+# Rates at temperatures T1 and T2
+LR1 <- low_pH_uLO2_g_hr_afdw$rate[1]   # Rate at temperature T1
+LR2 <- low_pH_uLO2_g_hr_afdw$rate[4]  # Rate at temperature T2
+AR1 <- ambient_pH_uLO2_g_hr_afdw$rate[1]   # Rate at temperature T1
+AR2 <- ambient_pH_uLO2_g_hr_afdw$rate[4]  # Rate at temperature T2
+
+# Calculate reference temperature (Tref)
+low_Tref <- LT2 - (10 * log(LR2/LR1) / (log(low_pH_Q10) * log(exp(1))))
+ambient_Tref <- AT2 - (10 * log(AR2/AR1) / (log(ambient_pH_Q10) * log(exp(1))))
+
+# Print reference temperature (Tref)
+print(low_Tref)
+print(ambient_Tref)
+low_pH_Q10
+ambient_pH_Q10
+```
+
+
+#Thermal Performance Curve Model Selection & curve Fitting 
+
+
+```{r}
+
+# Function to get lower and upper limits for all thermal performance models in the rTPC package
+get_all_model_limits <- function(temp, rate) {
+  model_list <- get_model_names()
+  limits_list <- list()
+  
+  for (model in model_list) {
+    start_vals <- get_start_vals(temp, rate, model_name = model)
+    lower_limits <- get_lower_lims(temp, rate, model_name = model)
+    upper_limits <- get_upper_lims(temp, rate, model_name = model)
+    limits_list[[model]] <- list(start = start_vals, lower = lower_limits, upper = upper_limits)
+  }
+  
+  return(limits_list)
+}
+
+compile_limits <- function(limits) {
+  limits_df <- do.call(rbind, lapply(names(limits), function(model) {
+    tibble(
+      Model = model,
+      Start = list(limits[[model]]$start),
+      Lower = list(limits[[model]]$lower),
+      Upper = list(limits[[model]]$upper)
+    )
+  })) %>% bind_rows()
+
+  # Expanding the lists assuming each has uniform length
+  limits_df_expanded <- limits_df %>%
+    unnest(cols = c(Start, Lower, Upper))
+
+  return(limits_df_expanded)
+}
+
+
+limits <- get_all_model_limits(respo.rates.tpc$temp, respo.rates.tpc$rate)
+limits_df <- compile_limits(limits)
+print(limits_df)
+
+```
+
+
+
+
+```{r}
+
+respo.rates.tpc <- respo.rates.tpc
+
+# fit every model formulation in rTPC
+model_selection_fits <- nest(respo.rates.tpc, data = c(temp, rate)) %>% 
+   mutate(boatman = map(data, ~nls_multstart(rate~boatman_2017(temp = temp, rmax, tmin, tmax, a,b),
+                        data = .x,
+                        iter = c(4,4,4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'boatman_2017') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'boatman_2017') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'boatman_2017'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'boatman_2017'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         gaussian = map(data, ~nls_multstart(rate~gaussian_1987(temp = temp, rmax, topt, a),
+                        data = .x,
+                        iter = c(4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'gaussian_1987') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'gaussian_1987') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'gaussian_1987'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'gaussian_1987'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         oneill = map(data, ~nls_multstart(rate~oneill_1972(temp = temp, rmax, ctmax, topt, q10),
+                        data = .x,
+                        iter = c(4,4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'oneill_1972') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'oneill_1972') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'oneill_1972'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'oneill_1972'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         quadratic = map(data, ~nls_multstart(rate~quadratic_2008(temp = temp, a, b, c),
+                        data = .x,
+                        iter = c(4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'quadratic_2008') - 0.5,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'quadratic_2008') + 0.5,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'quadratic_2008'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'quadratic_2008'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         sharpeschoolfull = map(data, ~nls_multstart(rate~sharpeschoolfull_1981(temp = temp, r_tref,e,el,tl,eh,th, tref = 10),
+                        data = .x,
+                        iter = c(4,4,4,4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         sharpeschoolhigh = map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 10),
+                        data = .x,
+                        iter = c(4,4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         weibull = map(data, ~nls_multstart(rate~weibull_1995(temp = temp, a,topt,b,c),
+                        data = .x,
+                        iter = c(4,4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'weibull_1995') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'weibull_1995') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'weibull_1995'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'weibull_1995'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)))
+    # Save model predictions 
+    saveRDS(combined_preds, here("Output", "sharpe_schoolfield_combined_predictions.rds"))
+    glimpse(select(model_selection_fits, 1:10))
+
+glimpse(select(model_selection_fits, 1:10))
+
+# stack models
+model_stack <- select(model_selection_fits, -data) %>%
+  pivot_longer(., names_to = 'model_name', values_to = 'fit', boatman:weibull)
+
+# stack models for low pH
+  low_pH_model_stack <- dplyr::select(low_pH_model_fits, -data) %>%
+  pivot_longer(., names_to = 'model_name', values_to = 'fit', gaussian:weibull)
+
+# stack models for high pH
+  high_pH_model_stack <- dplyr::select(high_pH_model_fits, -data) %>%
+  pivot_longer(., names_to = 'model_name', values_to = 'fit', gaussian:weibull)
+  
+# get parameters using tidy
+  high_pH_model_params <- high_pH_model_stack %>%
+  mutate(., est = map(fit, tidy)) %>%
+  dplyr::select(-fit) %>%
+  unnest(est)
+model_aic <- model_stack %>%
+  mutate(., info = map(fit, glance),
+         AICc =  map_dbl(fit, MuMIn::AICc)) %>%
+  select(-fit) %>%
+  unnest(info) %>%
+  select(Treatment=pH_Treatment, model_name, sigma, AIC, AICc, BIC, df.residual)
+
+print(model_aic)
+
+# Print the best model
+print(best_model)
+
+# showing data in table format
+model_aic %>% 
+  group_by(model_name) %>% 
+  gt(rowname_col = "pH_Treatment") %>%
+  tab_header(title = md("**Thermal Performance Models Statistical Summaries**")) %>% 
+  gt_highlight_rows(rows = c(7,10), font_weight = "normal") 
+
+low_pH_best_model <- model_aic %>%
+  filter(Treatment == "Low") %>% 
+  filter(AICc == min(AICc)) %>%
+  pull(model_name)
+
+high_pH_best_model <- model_aic %>%
+  filter(Treatment == "Ambient") %>% 
+  filter(AICc == min(AICc)) %>%
+  pull(model_name)
+```
+
+
+from plot find_statistic(m)
+
+```{r}
+# get parameters using tidy
+params <- model_stack %>%
+  mutate(., est = map(fit, tidy)) %>%
+  select(-fit) %>%
+  unnest(est)
+
+# get predictions using augment
+newdata <- tibble(temp = seq(min(respo.rates.tpc$temp), max(respo.rates.tpc$temp), length.out = 100))
+model_preds <- model_stack %>%
+  mutate(., preds = map(fit, augment, newdata = newdata)) %>%
+  select(-fit) %>%
+  unnest(preds)
+
+# seperating the curves for graphing seperate
+high_pH <- filter(respo.rates.tpc, pH_Treatment == "Ambient") 
+high_pH_model_preds <- filter(model_preds, pH_Treatment == "Ambient")
+low_pH <- filter(respo.rates.tpc, pH_Treatment == "Low") 
+low_pH_model_preds <- filter(model_preds, pH_Treatment == "Low")
+
+# take a random point from each model for labelling
+high_pH_model_labs <- filter(high_pH_model_preds, temp < 24) %>%
+  group_by(., model_name) %>%
+  sample_n(., 1) %>%
+  ungroup()
+
+# take a random point from each model for labelling
+low_pH_model_labs <- filter(low_pH_model_preds, temp < 24) %>%
+  group_by(., model_name) %>%
+  sample_n(., 1) %>%
+  ungroup()
+
+# plot
+ggplot(model_preds, aes(temp, rate, color = pH_Treatment)) +
+  geom_point(aes(temp, rate), respo.rates.tpc) +
+  geom_line(aes(temp, .fitted)) +
+  facet_wrap(~model_name, labeller = labeller(model_name = label_facets_num),
+             scales = 'free', ncol = 5) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = 'none',
+        strip.text = element_text(hjust = 0),
+        strip.background = element_blank()) +
+  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), 
+                     name = "Treatment") +
+  labs(x = 'Temperature (ºC)',
+       y = "(Respiration Rate (µmol g⁻¹ hr⁻¹)",
+       title = 'Fits of TPC Models') +
+  geom_hline(aes(yintercept = 0), linetype = 2)
+
+# multiple models low pH plot
+ggplot(low_pH_model_preds, aes(temp, .fitted)) +
+  geom_line(aes(col = model_name)) +
+  geom_label_repel(aes(temp, .fitted, label = model_name, col = model_name), fill = 'white', nudge_y = 2, segment.size = 0.5, segment.colour = 'grey50', low_pH_model_labs) +
+  geom_point(aes(temp, rate), low_pH) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = 'none') +
+  labs(x = 'Temperature (ºC)',
+       y = "(Respiration Rate (µmol g⁻¹ hr⁻¹)",
+       title = 'rTPC Model Fits - low pH') +
+  geom_hline(aes(yintercept = 0), linetype = 2) +
+  scale_color_brewer(type = 'qual', palette = 2)
+
+# multiple models high pH plot
+ggplot(high_pH_model_preds, aes(temp, .fitted)) +
+  geom_line(aes(col = model_name)) +
+  geom_label_repel(aes(temp, .fitted, label = model_name, col = model_name), fill = 'white', nudge_y = 2, segment.size = 0.5, segment.colour = 'grey50', high_pH_model_labs) +
+  geom_point(aes(temp, rate), high_pH) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = 'none') +
+  labs(x = 'Temperature (ºC)',
+       y = "(Respiration Rate (µmol g⁻¹ hr⁻¹)",
+       title = 'rTPC Model Fits - high pH') +
+  geom_hline(aes(yintercept = 0), linetype = 2) +
+  scale_color_brewer(type = 'qual', palette = 2)
+```
+```{r}
+# Splitting data by pH treatment
+low.pH <- filter(respo.rates.tpc, pH_Treatment == 'Low')
+high.pH <- filter(respo.rates.tpc, pH_Treatment == 'Ambient')
+
+# Model fitting function - to be applied for both low and high pH data
+fit_model <- function(data) {
+  start_vals <- get_start_vals(data$temp, data$rate, model_name = 'sharpeschoolhigh_1981')
+  
+  nls_multstart(
+    rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref = 20),
+    data = data,
+    iter = c(3, 3, 3, 3),
+    start_lower = start_vals - 10,
+    start_upper = start_vals + 10,
+    lower = get_lower_lims(data$temp, data$rate, model_name = 'sharpeschoolhigh_1981'),
+    upper = get_upper_lims(data$temp, data$rate, model_name = 'sharpeschoolhigh_1981'),
+    supp_errors = 'Y',
+    control = nls.lm.control(maxiter = 1000),
+    convergence_count = FALSE
+  )
+}
+
+# Fitting models
+sharpe_schoolfield_mod_low <- fit_model(low.pH)
+sharpe_schoolfield_mod_high <- fit_model(high.pH)
+
+# Summarizing model fits
+summary(sharpe_schoolfield_mod_low)
+summary(sharpe_schoolfield_mod_high)
+
+# Predicting using the fitted models
+# Generate a sequence of temperatures for prediction
+temp_seq <- seq(min(respo.rates.tpc$temp), max(respo.rates.tpc$temp), length.out = 100)
+
+# Make predictions for both models
+preds_low <- augment(sharpe_schoolfield_mod_low, newdata = data.frame(temp = temp_seq))
+preds_high <- augment(sharpe_schoolfield_mod_high, newdata = data.frame(temp = temp_seq))
+
+# Combine predictions for plotting
+combined_preds <- bind_rows(
+  mutate(preds_low, pH_Treatment = 'Low'),
+  mutate(preds_high, pH_Treatment = 'Ambient')
+)
+
+# Plotting the combined predictions
+ggplot(combined_preds, aes(x = temp, y = .fitted, color = pH_Treatment)) +
+  geom_image(aes(image = image), size = 0.005) +
+  geom_line() +
+  theme_bw() +
+  labs(
+    x = 'Temperature (ºC)',
+    y = ')',
+    title = 'Sharpe-Schoolfield Model Fit for TPC Curves'
+  ) +
+  scale_color_manual(values = c('Low' = 'cyan3', 'Ambient' = 'orange'))
+
+```
+
+
+
+```{r}
+# Respiration Summary Statistics 
+
+
+#creating a function for standard error 
+se <- function(x) (sd(x) / sqrt(length(x)))
+
+respo.rates.stats <- respo.rates.dataset %>% 
+  dplyr::select(Snail_ID, Temp_Treatment, pH_Treatment, 
+         umolO2.gm.hr, umolO2.gm.hr., Temp.C) %>%
+  mutate(pH_Treatment = as.factor(pH_Treatment)) %>% 
+  group_by(Temp_Treatment, pH_Treatment) %>% 
+  summarize(mean.umolO2.gm.hr =mean(umolO2.gm.hr),
+            var.umolO2.gm.hr = var(umolO2.gm.hr),
+            sd.umolO2.gm.hr = sd(umolO2.gm.hr),
+            se.umolO2.gm.hr =se(umolO2.gm.hr),
+            mean.umolO2.gm.hr = mean(umolO2.gm.hr),
+            var.umolO2.gm.hr = var(umolO2.gm.hr),
+            sd.umolO2.gm.hr = sd(umolO2.gm.hr),
+            se.umolO2.gm.hr =se(umolO2.gm.hr),
+            mean.Temp.C = mean(Temp.C),
+            var.Temp.C = var(Temp.C),
+            sd.Temp.C = sd(Temp.C),
+            se.Temp.C = se(Temp.C))
+
+as_tibble(respo.rates.stats)
+```
+
+```{r}
+
+respo.rates.tpc <- respo.rates.tpc %>% 
+  dplyr::select(Snail_ID, Temp_Treatment, pH_Treatment, 
+         rate=umolO2.g.hr, temp=Temp.C) 
+
+# Load in data and filter to keep just a single curve (low pH)
+low.pH <- filter(respo.rates.tpc, pH_Treatment == 'Low')
+
+# Load in data and filter to keep just a single curve (high pH)
+high.pH <- filter(respo.rates.tpc, pH_Treatment == 'Ambient')
+
+# Sharpe-Schoolfield Thermal Performance Curves
+
+# Get start values and fit model for low pH
+start_vals_low <- get_start_vals(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981')
+
+# Fit the Sharpe-Schoolfield model for low pH
+sharpe_schoolfield_mod_low <- nls_multstart(
+  rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref = 20),
+  data = low.pH,
+  iter = c(3, 3, 3, 3),
+  start_lower = start_vals_low - 10,
+  start_upper = start_vals_low + 10,
+  lower = get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  upper = get_upper_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  supp_errors = 'Y',
+  control = nls.lm.control(maxiter=1000),
+  convergence_count = FALSE
+)
+
+# Look at the model fit summary for low pH
+summary(sharpe_schoolfield_mod_low)
+
+# Get predictions for low pH
+preds_low <- data.frame(temp = seq(min(low.pH$temp), max(low.pH$temp), length.out = 100))
+preds_low <- broom::augment(sharpe_schoolfield_mod_low, newdata = preds_low)
+
+# Get start values and fit model for high pH
+start_vals_high <- get_start_vals(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981')
+
+# Fit the Sharpe-Schoolfield model for high pH
+sharpe_schoolfield_mod_high <- nls_multstart(
+  rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref = 20),
+  data = high.pH,
+  iter = c(3, 3, 3, 3),
+  start_lower = start_vals_high - 10,
+  start_upper = start_vals_high + 10,
+  lower = get_lower_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  upper = get_upper_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  supp_errors = 'Y',
+  control = nls.lm.control(maxiter=1000),
+  convergence_count = FALSE
+)
+
+# Look at the model fit summary for high pH
+summary(sharpe_schoolfield_mod_high)
+
+# Get predictions for high pH
+preds_high <- data.frame(temp = seq(min(high.pH$temp), max(high.pH$temp), length.out = 100))
+preds_high <- broom::augment(sharpe_schoolfield_mod_high, newdata = preds_high)
+
+# Combine low pH and high pH predictions
+combined_preds <- rbind(
+  cbind(preds_low, pH_Treatment = 'Low'),
+  cbind(preds_high, pH_Treatment = 'Ambient')
+)
+
+# Plot the results for both low pH and high pH
+ggplot(combined_preds) +
+  geom_image(aes(temp, rate, image=image, color = pH_Treatment),
+             respo.rates.tpc, size = 0.075, alpha = 0.5) +
+  geom_line(aes(temp, .fitted, color = pH_Treatment)) +
+  theme_bw() +
+  labs(
+    x = 'Temperature',
+    y = 'Respiration Rate (µmol g⁻¹ hr⁻¹)',
+    title = 'Sharpe-Schoolfield Model Fit for TPC Curves Low (~7.7) and Ambient (8.0) pH'
+  ) +
+  scale_color_manual(values = c('Low' = 'cyan3', 'Ambient' = 'orange'))
+
+# Bootstrapping Sharpe Schoolfield
+
+sharpeshool_low_pH_fit <- nest(low.pH, data = c(temp, rate)) %>%
+  mutate(sharpeschoolhigh = map(high.pH, ~nls.multstart::nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 20),
+                        data = .x,
+                        iter = 500,
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         # create new temperature data
+         new_data = map(high.pH, ~tibble(temp = seq(min(.x$temp), max(.x$temp), length.out = 100))),
+         # predict over that data,
+         preds =  map2(sharpeschoolhigh, new_data, ~augment(.x, newdata = .y)))
+
+# unnest predictions
+low_pH_preds <- select(sharpeshool_low_pH_fit, preds) %>%
+  unnest(preds)
+
+# Bootstrap models  Refit model using nlsLM
+sharpeschool_low_fit_nlsLM <- minpack.lm::nlsLM(rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref=20),
+                                   data = low.pH,
+                                   start = coef(sharpeshool_low_pH_fit$sharpeschoolhigh[[1]]),
+                                   lower = get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                   upper = get_upper_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                   control = nls.lm.control(maxiter=1000),
+                                   weights = rep(1, nrow(low.pH)))
+
+# Bootstrap using case resampling
+boot.low.pH <- Boot(sharpeschool_low_fit_nlsLM, method = 'case')
+hist(boot.low.pH, layout = c(2,2))
+
+# Create predictions of each bootstrapped model
+boot_low_preds <- boot.low.pH$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = row_number()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(low.pH$temp), max(low.pH$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = sharpeschoolhigh_1981(temp, r_tref, e, eh, th, tref=20))
+
+# Calculate bootstrapped confidence intervals
+boot_low_conf_preds <- boot_low_preds %>%
+  group_by(temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975)) %>%
+  ungroup()
+
+# Plot bootstrapped CIs
+boot.low.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), data = low_pH_preds, col = 'cyan3') +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper), data = boot_low_conf_preds, fill = 'cyan3', alpha = 0.3) +
+  geom_image(aes(temp, rate, image = image), data = low.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'µmol g⁻¹ hr⁻¹') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Plot bootstrapped predictions
+boot.low.pH.plot.predictions <- ggplot() +
+  geom_line(aes(temp, .fitted), data = low_pH_preds, col = 'cyan3') +
+  geom_line(aes(temp, pred, group = iter), data = boot_low_preds, col = 'cyan3', alpha = 0.007) +
+  geom_image(aes(temp, rate, image = image), data = low.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       title = 'Respiration Rate for *Tegula funebralis* at Low pH (pH ~7.7)') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+sharpeshool_high_pH_fit <- nest(high.pH, data = c(temp, rate)) %>%
+  mutate(sharpeschoolhigh = map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 20),
+                        data = .x,
+                        iter = c(3,3,3,3),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         # create new temperature data
+         new_data = map(data, ~tibble(temp = seq(min(.x$temp), max(.x$temp), length.out = 100))),
+         # predict over that data,
+         preds =  map2(sharpeschoolhigh, new_data, ~augment(.x, newdata = .y)))
+
+# unnest predictions
+high_pH_preds <- select(sharpeshool_high_pH_fit, preds) %>%
+  unnest(preds)
+
+# Refit model using nlsLM for high pH
+sharpeschool_high_fit_nlsLM <- minpack.lm::nlsLM(rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref=20),
+                                    data = high.pH,
+                                    start = coef(sharpeshool_high_pH_fit$sharpeschoolhigh[[1]]),
+                                    lower = get_lower_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                    upper = get_upper_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                    control = nls.lm.control(maxiter=1000),
+                                    weights = rep(1, nrow(high.pH)))
+
+# Bootstrap using case resampling
+boot.high.pH <- Boot(sharpeschool_high_fit_nlsLM, method = 'case')
+hist(boot.high.pH, layout = c(2,2))
+
+# Create predictions of each bootstrapped model
+boot_high_preds <- boot.high.pH$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = row_number()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(high.pH$temp), max(high.pH$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = sharpeschoolhigh_1981(temp, r_tref, e, eh, th, tref=20))
+
+# Calculate bootstrapped confidence intervals
+boot_high_conf_preds <- boot_high_preds %>%
+  group_by(temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975)) %>%
+  ungroup()
+
+# Plot bootstrapped CIs
+boot.high.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), data = high_pH_preds, col = 'orange') +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper), data = boot_high_conf_preds, fill = 'orange', alpha = 0.3) +
+  geom_image(aes(temp, rate, image = image), data = high.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'µmol g⁻¹ hr⁻¹',
+       title = 'Respiration Rate for *Tegula funebralis* at Ambient pH (pH ~7.7)') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Plot bootstrapped predictions
+boot.high.pH.plot.predictions <- ggplot() +
+  geom_line(aes(temp, .fitted), data = high_pH_preds, col = 'orange') +
+  geom_line(aes(temp, pred, group = iter), data = boot_high_preds, col = 'orange', alpha = 0.007) +
+  geom_image(aes(temp, rate, image = image), data = high.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       title = 'Respiration Rate for *Tegula funebralis* at Ambient pH (pH ~7.7)') +
+  scale_y_continuous(limits = c(0, 140), breaks = seq(0, 149, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Combine the plots
+boot.low.pH.plot + boot.low.pH.plot.predictions
+
+# Combine the plots
+boot.high.pH.plot + boot.low.pH.plot.predictions
+```
+
+```{r}
+
+# Load in data and filter to keep just a single curve (low pH)
+low.pH <- filter(respo.rates.tpc, pH_Treatment == 'Low')
+
+# Load in data and filter to keep just a single curve (high pH)
+high.pH <- filter(respo.rates.tpc, pH_Treatment == 'Ambient')
+
+# Sharpe-Schoolfield Thermal Performance Curves
+
+# Get start values and fit model for low pH
+start_vals_low <- get_start_vals(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981')
+
+# Fit the Sharpe-Schoolfield model for low pH
+sharpe_schoolfield_mod_low <- nls_multstart(
+  rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref = 20),
+  data = low.pH,
+  iter = c(3, 3, 3, 3),
+  start_lower = start_vals_low - 10,
+  start_upper = start_vals_low + 10,
+  lower = get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  upper = get_upper_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  supp_errors = 'Y',
+  control = nls.lm.control(maxiter=1000),
+  convergence_count = FALSE
+)
+
+# Look at the model fit summary for low pH
+summary(sharpe_schoolfield_mod_low)
+
+# Get predictions for low pH
+preds_low <- data.frame(temp = seq(min(low.pH$temp), max(low.pH$temp), length.out = 100))
+preds_low <- broom::augment(sharpe_schoolfield_mod_low, newdata = preds_low)
+
+# Get start values and fit model for high pH
+start_vals_high <- get_start_vals(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981')
+
+# Fit the Sharpe-Schoolfield model for high pH
+sharpe_schoolfield_mod_high <- nls_multstart(
+  rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref = 20),
+  data = high.pH,
+  iter = c(3, 3, 3, 3),
+  start_lower = start_vals_high - 10,
+  start_upper = start_vals_high + 10,
+  lower = get_lower_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  upper = get_upper_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  supp_errors = 'Y',
+  control = nls.lm.control(maxiter=1000),
+  convergence_count = FALSE
+)
+
+# Look at the model fit summary for high pH
+summary(sharpe_schoolfield_mod_high)
+
+# Get predictions for high pH
+preds_high <- data.frame(temp = seq(min(high.pH$temp), max(high.pH$temp), length.out = 100))
+preds_high <- broom::augment(sharpe_schoolfield_mod_high, newdata = preds_high)
+
+# Combine low pH and high pH predictions
+combined_preds <- rbind(
+  cbind(preds_low, pH_Treatment = 'Low'),
+  cbind(preds_high, pH_Treatment = 'Ambient')
+)
+
+# Plot the results for both low pH and high pH
+ggplot(combined_preds) +
+  geom_image(aes(temp, rate, image=image, color = pH_Treatment),
+             respo.rates.tpc, size = 0.075, alpha = 0.5) +
+  geom_line(aes(temp, .fitted, color = pH_Treatment)) +
+  theme_bw() +
+  labs(
+    x = 'Temperature',
+    y = 'Respiration Rate (µmol g⁻¹ hr⁻¹)',
+    title = 'Sharpe-Schoolfield Model Fit for TPC Curves Low (~7.7) and Ambient (8.0) pH'
+  ) +
+  scale_color_manual(values = c('Low' = 'cyan3', 'Ambient' = 'orange'))
+
+# Bootstrapping Sharpe Schoolfield
+
+sharpeshool_low_pH_fit <- nest(low.pH, data = c(temp, rate)) %>%
+  mutate(sharpeschoolhigh = map(data, ~nls.multstart::nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 20),
+                        data = .x,
+                        iter = 500,
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         # create new temperature data
+         new_data = map(data, ~tibble(temp = seq(min(.x$temp), max(.x$temp), length.out = 100))),
+         # predict over that data,
+         preds =  map2(sharpeschoolhigh, new_data, ~augment(.x, newdata = .y)))
+
+# unnest predictions
+low_pH_preds <- select(sharpeshool_low_pH_fit, preds) %>%
+  unnest(preds)
+
+# Bootstrap models  Refit model using nlsLM
+sharpeschool_low_fit_nlsLM <- minpack.lm::nlsLM(rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref=20),
+                                   data = low.pH,
+                                   start = coef(sharpeshool_low_pH_fit$sharpeschoolhigh[[1]]),
+                                   lower = get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                   upper = get_upper_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                   control = nls.lm.control(maxiter=1000),
+                                   weights = rep(1, nrow(low.pH)))
+
+# Bootstrap using case resampling
+boot.low.pH <- Boot(sharpeschool_low_fit_nlsLM, method = 'case')
+hist(boot.low.pH, layout = c(2,2))
+
+# Create predictions of each bootstrapped model
+boot_low_preds <- boot.low.pH$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = row_number()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(low.pH$temp), max(low.pH$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = sharpeschoolhigh_1981(temp, r_tref, e, eh, th, tref=20))
+
+# Calculate bootstrapped confidence intervals
+boot_low_conf_preds <- boot_low_preds %>%
+  group_by(temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975)) %>%
+  ungroup()
+
+# Plot bootstrapped CIs
+boot.low.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), data = low_pH_preds, col = 'cyan3') +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper), data = boot_low_conf_preds, fill = 'cyan3', alpha = 0.3) +
+  geom_image(aes(temp, rate, image = image), data = low.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'µmol g⁻¹ hr⁻¹') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Plot bootstrapped predictions
+boot.low.pH.plot.predictions <- ggplot() +
+  geom_line(aes(temp, .fitted), data = low_pH_preds, col = 'cyan3') +
+  geom_line(aes(temp, pred, group = iter), data = boot_low_preds, col = 'cyan3', alpha = 0.007) +
+  geom_image(aes(temp, rate, image = image), data = low.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       title = 'Respiration Rate for *Tegula funebralis* at Low pH (pH ~7.7)') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+sharpeshool_high_pH_fit <- nest(high.pH, data = c(temp, rate)) %>%
+  mutate(sharpeschoolhigh = map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 20),
+                        data = .x,
+                        iter = c(3,3,3,3),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         # create new temperature data
+         new_data = map(data, ~tibble(temp = seq(min(.x$temp), max(.x$temp), length.out = 100))),
+         # predict over that data,
+         preds =  map2(sharpeschoolhigh, new_data, ~augment(.x, newdata = .y)))
+
+# unnest predictions
+high_pH_preds <- select(sharpeshool_high_pH_fit, preds) %>%
+  unnest(preds)
+
+# Refit model using nlsLM for high pH
+sharpeschool_high_fit_nlsLM <- minpack.lm::nlsLM(rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref=20),
+                                    data = high.pH,
+                                    start = coef(sharpeshool_high_pH_fit$sharpeschoolhigh[[1]]),
+                                    lower = get_lower_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                    upper = get_upper_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                    control = nls.lm.control(maxiter=1000),
+                                    weights = rep(1, nrow(high.pH)))
+
+# Bootstrap using case resampling
+boot.high.pH <- Boot(sharpeschool_high_fit_nlsLM, method = 'case')
+hist(boot.high.pH, layout = c(2,2))
+
+# Create predictions of each bootstrapped model
+boot_high_preds <- boot.high.pH$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = row_number()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(high.pH$temp), max(high.pH$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = sharpeschoolhigh_1981(temp, r_tref, e, eh, th, tref=20))
+
+# Calculate bootstrapped confidence intervals
+boot_high_conf_preds <- boot_high_preds %>%
+  group_by(temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975)) %>%
+  ungroup()
+
+# Plot bootstrapped CIs
+boot.high.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), data = high_pH_preds, col = 'orange') +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper), data = boot_high_conf_preds, fill = 'orange', alpha = 0.3) +
+  geom_image(aes(temp, rate, image = image), data = high.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'µmol g⁻¹ hr⁻¹',
+       title = 'Respiration Rate for *Tegula funebralis* at Ambient pH (pH ~7.7)') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Plot bootstrapped predictions
+boot.high.pH.plot.predictions <- ggplot() +
+  geom_line(aes(temp, .fitted), data = high_pH_preds, col = 'orange') +
+  geom_line(aes(temp, pred, group = iter), data = boot_high_preds, col = 'orange', alpha = 0.007) +
+  geom_image(aes(temp, rate, image = image), data = high.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       title = 'Respiration Rate for *Tegula funebralis* at Ambient pH (pH ~7.7)') +
+  scale_y_continuous(limits = c(0, 140), breaks = seq(0, 149, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Combine the plots
+boot.low.pH.plot + boot.low.pH.plot.predictions
+
+# Combine the plots
+boot.high.pH.plot + boot.low.pH.plot.predictions
+```
+
+
+
+
+
+
+#Respiration Thermal Performance Curves
+
+```{r}
+respo.rates.dataset <- joules.respo.rates.dataset
+
+#load in the data set and select for temperature, rate, and pH treatment
+respo.rates.tpc <- respo.rates.dataset %>% 
+  mutate(rate=umolO2.gm.hr.corrected, temp=Temp.C) %>%
+  dplyr::select(pH_Treatment, temp, rate)
+
+# Load in data and filter to keep just a single curve (low pH)
+low.pH <- filter(respo.rates.tpc, pH_Treatment == 'Low') 
+
+# Load in data and filter to keep just a single curve (high pH)
+high.pH <- filter(respo.rates.tpc, pH_Treatment == 'Ambient') 
+
+# Gaussian Thermal Performance Curves
+
+# Get start values and fit model for low pH
+start_vals_low <- get_start_vals(low.pH$temp, low.pH$rate, model_name = 'gaussian_1987')
+
+# Fit the Gaussian model for low pH
+gaussian_mod_low <- nls_multstart(
+  rate ~ gaussian_1987(temp = temp, rmax, topt, a),
+  data = low.pH,
+  iter = c(4, 4, 4),
+  start_lower = start_vals_low - 10,
+  start_upper = start_vals_low + 10,
+  lower = get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'gaussian_1987'),
+  upper = get_upper_lims(low.pH$temp, low.pH$rate, model_name = 'gaussian_1987'),
+  supp_errors = 'Y',
+  convergence_count = FALSE
+)
+
+# Look at the model fit summary for low pH
+summary(gaussian_mod_low)
+
+# Get predictions for low pH
+preds_low <- data.frame(temp = seq(min(low.pH$temp), max(low.pH$temp), length.out = 100))
+preds_low <- broom::augment(gaussian_mod_low, newdata = preds_low)
+
+# Get start values and fit model for high pH
+start_vals_high <- get_start_vals(high.pH$temp, high.pH$rate, model_name = 'gaussian_1987')
+
+# Fit the Gaussian model for high pH
+gaussian_mod_high <- nls_multstart(
+  rate ~ gaussian_1987(temp = temp, rmax, topt, a),
+  data = high.pH,
+  iter = c(4, 4, 4),
+  start_lower = start_vals_high - 10,
+  start_upper = start_vals_high + 10,
+  lower = get_lower_lims(high.pH$temp, high.pH$rate, model_name = 'gaussian_1987'),
+  upper = get_upper_lims(high.pH$temp, high.pH$rate, model_name = 'gaussian_1987'),
+  supp_errors = 'Y',
+  convergence_count = FALSE
+)
+
+# Look at the model fit summary for high pH
+summary(gaussian_mod_high)
+
+# Get predictions for high pH
+preds_high <- data.frame(temp = seq(min(high.pH$temp), max(high.pH$temp), length.out = 100))
+preds_high <- broom::augment(gaussian_mod_high, newdata = preds_high)
+
+# Combine low pH and high pH predictions
+combined_preds <- rbind(
+  cbind(preds_low, pH_Treatment = 'Low'),
+  cbind(preds_high, pH_Treatment = 'Ambient')
+)
+
+# Plot the results for both low pH and high pH
+ggplot(combined_preds) +
+  geom_image(aes(temp, rate, image=image, color = pH_Treatment),
+             respo.rates.tpc, size = 0.075, alpha = 0.5) +
+  geom_line(aes(temp, .fitted, color = pH_Treatment)) +
+  theme_bw() +
+  labs(
+    x = 'Temperature',
+    y = 'Rate',
+    title = 'Gaussian Model Fit for TPC Curves - Low and High pH'
+  ) +
+  scale_color_manual(values = c('Low' = 'cyan3', 'Ambient' = 'orange'))
+
+# Bootstrapping Gaussian 
+gaussian_low_pH_fit <- nest(low.pH, data = c(temp, rate)) %>%
+  mutate(gaussian = map(data, ~nls_multstart(rate~gaussian_1987(temp = temp, rmax, topt, a),
+                        data = .x,
+                        iter = c(4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'gaussian_1987') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'gaussian_1987') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'gaussian_1987'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'gaussian_1987'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         # create new temperature data
+         new_data = map(data, ~tibble(temp = seq(min(.x$temp), max(.x$temp), length.out = 100))),
+         # predict over that data,
+         preds =  map2(gaussian, new_data, ~augment(.x, newdata = .y)))
+
+# unnest predictions
+low_pH_preds <- select(gaussian_low_pH_fit, preds) %>%
+  unnest(preds)
+
+# Bootstrap models  Refit model using nlsLM
+gaussian_low_fit_nlsLM <- minpack.lm::nlsLM(rate ~ gaussian_1987(temp = temp, rmax, topt, a),
+                                   data = low.pH,
+                                   start = coef(gaussian_low_pH_fit$gaussian[[1]]),
+                                   lower = get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'gaussian_1987'),
+                                   upper = get_upper_lims(low.pH$temp, low.pH$rate, model_name = 'gaussian_1987'),
+                                   control = nls.lm.control(maxiter = 200), 
+                                   weights = rep(1, nrow(low.pH)))
+
+# Bootstrap using case resampling
+boot.low.pH <- Boot(gaussian_low_fit_nlsLM, method = 'case')
+hist(boot.low.pH, layout = c(2,2))
+
+# Create predictions of each bootstrapped model
+boot_low_pH_preds <- boot.low.pH$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = row_number()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(low.pH$temp), max(low.pH$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = gaussian_1987(temp = temp, rmax, topt, a))
+
+# Calculate bootstrapped confidence intervals
+boot_low_conf_preds <- boot_low_pH_preds %>%
+  group_by(temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975)) %>%
+  ungroup()
+
+# Plot bootstrapped CIs
+boot.low.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), data = low_pH_preds, col = 'cyan3') +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper), data = boot_low_conf_preds, fill = 'cyan3', alpha = 0.3) +
+  geom_image(aes(temp, rate, image = image), data = low.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Respiration Rate',
+       title = 'Respiration Rate (pH ~7.9)') +
+  scale_y_continuous(limits = c(0, 140), breaks = seq(0, 140, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Plot bootstrapped predictions
+boot.low.pH.plot.predictions <- ggplot() +
+  geom_line(aes(temp, .fitted), data = low_pH_preds, col = 'cyan3') +
+  geom_line(aes(temp, pred, group = iter), data = boot_low_pH_preds, col = 'cyan3', alpha = 0.007) +
+  geom_image(aes(temp, rate, image = image), data = low.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       title = 'Respiration Rate (pH ~7.9)') +
+  scale_y_continuous(limits = c(0, 140), breaks = seq(0, 140, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+boot.low.pH.plot + boot.low.pH.plot.predictions
+
+gaussian_high_pH_fit <- nest(high.pH, data = c(temp, rate)) %>%
+  mutate(gaussian = map(data, ~nls_multstart(rate~gaussian_1987(temp = temp, rmax, topt, a),
+                        data = .x,
+                        iter = c(4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'gaussian_1987') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'gaussian_1987') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'gaussian_1987'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'gaussian_1987'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         # create new temperature data
+         new_data = map(data, ~tibble(temp = seq(min(.x$temp), max(.x$temp), length.out = 100))),
+         # predict over that data,
+         preds =  map2(gaussian, new_data, ~augment(.x, newdata = .y)))
+
+# unnest predictions
+high_pH_preds <- select(gaussian_high_pH_fit, preds) %>%
+  unnest(preds)
+
+# Bootstrap models  Refit model using nlsLM
+gaussian_high_fit_nlsLM <- minpack.lm::nlsLM(rate ~ gaussian_1987(temp = temp, rmax, topt, a),
+                                   data = high.pH,
+                                   start = coef(gaussian_high_pH_fit$gaussian[[1]]),
+                                   lower = get_lower_lims(high.pH$temp, high.pH$rate, model_name = 'gaussian_1987'),
+                                   upper = get_upper_lims(high.pH$temp, high.pH$rate, model_name = 'gaussian_1987'),
+                                   control = nls.lm.control(maxiter = 200), 
+                                   weights = rep(1, nrow(high.pH)))
+
+# Bootstrap using case resampling
+boot.high.pH <- Boot(gaussian_high_fit_nlsLM, method = 'case')
+hist(boot.high.pH, layout = c(2,2))
+
+# Create predictions of each bootstrapped model
+boot_high_pH_preds <- boot.high.pH$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = row_number()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(high.pH$temp), max(high.pH$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = gaussian_1987(temp = temp, rmax, topt, a))
+
+# Calculate bootstrapped confidence intervals
+boot_high_conf_preds <- boot_high_pH_preds %>%
+  group_by(temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975)) %>%
+  ungroup()
+
+# Plot bootstrapped CIs
+boot.high.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), data = high_pH_preds, col = 'orange') +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper), data = boot_high_conf_preds, fill = 'orange', alpha = 0.3) +
+  geom_image(aes(temp, rate, image = image), data = high.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Respiration Rate',
+       title = 'Respiration Rate (pH ~7.9)') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Plot bootstrapped predictions
+boot.high.pH.plot.predictions <- ggplot() +
+  geom_line(aes(temp, .fitted), data = high_pH_preds, col = 'orange') +
+  geom_line(aes(temp, pred, group = iter), data = boot_high_pH_preds, col = 'orange', alpha = 0.007) +
+  geom_image(aes(temp, rate, image = image), data = high.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       title = 'Respiration Rate (pH ~7.9)') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+boot.high.pH.plot + boot.high.pH.plot.predictions
+
+```
+
+
+```{r}
+
+# get parameters of fitted model
+gaussian_high_parameters <- broom::tidy(gaussian_high_fit_nlsLM) %>%
+  select(param = term, estimate)
+
+# calculate confidence intervals of models
+
+# asymptotic confidence intervals estimate
+ci_gaussian_high_parameters_1 <- nlstools::confint2(gaussian_high_fit_nlsLM, method = 'asymptotic') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'asymptotic')
+
+# profile likelihood confidence intervals estimate
+ci_gaussian_high_parameters_2 <- confint(gaussian_high_fit_nlsLM) %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'profile')
+
+# CIs from case resampling
+ci_gaussian_high_parameters_3 <- confint(gaussian_high_fit_nlsLM, method = 'bca') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'case bootstrap')
+
+# CIs from residual resampling
+ci_gaussian_high_parameters_4 <- Boot(gaussian_high_fit_nlsLM, method = 'residual') %>%
+  confint(., method = 'bca') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'residual bootstrap')
+
+ci_gaussian_high_parameters <- bind_rows(ci_gaussian_high_parameters_1, ci_gaussian_high_parameters_2, ci_gaussian_high_parameters_3, ci_gaussian_high_parameters_4) %>%
+  left_join(., gaussian_high_parameters) %>% 
+  mutate(Treatment="Ambient")
+
+# get parameters of fitted model
+gaussian_low_parameters <- broom::tidy(gaussian_low_fit_nlsLM) %>%
+  select(param = term, estimate)
+
+# calculate confidence intervals of models
+
+# asymptotic confidence intervals estimate
+ci_gaussian_low_parameters_1 <- nlstools::confint2(gaussian_low_fit_nlsLM, method = 'asymptotic') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'asymptotic')
+
+# profile likelihood confidence intervals estimate
+ci_gaussian_low_parameters_2 <- confint(gaussian_low_fit_nlsLM) %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'profile')
+
+# CIs from case resampling
+ci_gaussian_low_parameters_3 <- confint(gaussian_low_fit_nlsLM, method = 'bca') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'case bootstrap')
+
+# CIs from residual resampling
+ci_gaussian_low_parameters_4 <- Boot(gaussian_low_fit_nlsLM, method = 'residual') %>%
+  confint(., method = 'bca') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'residual bootstrap')
+
+ci_gaussian_low_parameters <- bind_rows(ci_gaussian_low_parameters_1, ci_gaussian_low_parameters_2, ci_gaussian_low_parameters_3, ci_gaussian_low_parameters_4) %>%
+  left_join(., gaussian_low_parameters) %>% 
+  mutate(Treatment="Low")
+
+# CI gaussian low ggplot plot 
+ggplot(ci_gaussian_low_parameters, aes(forcats::fct_relevel(method, c('profile', 'asymptotic')), estimate, col = method)) +
+  geom_hline(aes(yintercept = conf_lower), linetype = 2, filter(ci_gaussian_low_parameters, method == 'profile')) +
+  geom_hline(aes(yintercept = conf_upper), linetype = 2, filter(ci_gaussian_low_parameters, method == 'profile')) +
+  geom_point(size = 4) +
+  geom_linerange(aes(ymin = conf_lower, ymax = conf_upper)) +
+  theme_bw() +
+  facet_wrap(~param, scales = 'free') +
+  scale_x_discrete('', labels = function(x) stringr::str_wrap(x, width = 10)) +
+  labs(title = 'Calculation of Confidence Intervals for Model Parameters', y = 'Estimate', color = 'Method') +
+  theme(axis.text.x = element_text(size = 6, hjust = 0.5), plot.title = element_text(hjust = 0.5))
+
+# CI gaussian high ggplot plot
+ggplot(ci_gaussian_high_parameters, aes(forcats::fct_relevel(method, c('profile', 'asymptotic')), estimate, col = method)) +
+  geom_hline(aes(yintercept = conf_lower), linetype = 2, filter(ci_gaussian_high_parameters, method == 'profile')) +
+  geom_hline(aes(yintercept = conf_upper), linetype = 2, filter(ci_gaussian_high_parameters, method == 'profile')) +
+  geom_point(size = 4) +
+  geom_linerange(aes(ymin = conf_lower, ymax = conf_upper)) +
+  theme_bw() +
+  facet_wrap(~param, scales = 'free') +
+  scale_x_discrete('', labels = function(x) stringr::str_wrap(x, width = 10)) +
+  labs(title = 'Calculation of Confidence Intervals for Model Parameters', y = 'Estimate', color = 'Method') +
+  theme(axis.text.x = element_text(size = 6, hjust = 0.5), plot.title = element_text(hjust = 0.5))
+
+#Presenting TPC parameter data as a table 
+tpc_parameters <- full_join(ci_gaussian_high_parameters, ci_gaussian_low_parameters) 
+as_tibble(tpc_parameters)
+
+# Create the plot
+ggplot(tpc_parameters, aes(x = method, y = estimate, ymin = conf_lower, ymax = conf_upper, color = Treatment)) +
+  geom_hline(aes(yintercept = conf_lower, color = Treatment), alpha= 0.3, linetype = 2, filter(tpc_parameters, method == 'profile')) +
+  geom_hline(aes(yintercept = conf_upper, color = Treatment), alpha= 0.3, linetype = 2, filter(tpc_parameters, method == 'profile')) +
+  geom_point(size = 4, position = position_dodge(width = 1)) +  # Adjust dodge.width as needed
+  geom_linerange(aes(ymin = conf_lower, ymax = conf_upper), position = position_dodge(width = 1)) +
+  theme_minimal() +
+  facet_wrap(~param, scales = 'free') +
+  scale_x_discrete('', labels = function(x) stringr::str_wrap(x, width = 10)) +
+  labs(
+    title = "Calculation of Confidence Intervals for Model Parameters",
+    y = "Estimate",
+    color = "Treatment") +
+  scale_color_manual(values = c("cyan3", "orange")) +
+    theme(
+    axis.title.y = element_text(size = 6),
+    axis.text.x = element_text(size = 6),  # Adjust the size of the x-axis labels
+    axis.text.y = element_text(size = 6),  # Adjust the size of the y-axis labels
+    strip.text = element_text(size = 10, face = "bold"),  # Bold facet wrap headers
+    legend.text = element_text(size = 6),  # Adjust the size of legend text
+    legend.title = element_text(size = 8, face = "bold"))  # Bold legend title
+
+#Extracting Extra TPC parameters 
+high_extra_params <- calc_params(gaussian_high_fit_nlsLM) %>%
+  pivot_longer(everything(), names_to =  'param', values_to = 'estimate')
+
+high_ci_extra_params <- Boot(gaussian_high_fit_nlsLM, f = function(x){unlist(calc_params(x))}, labels = names(calc_params(gaussian_high_fit_nlsLM)), R = 1000, method = 'case') %>%
+  confint(., method = 'bca') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'case bootstrap')
+
+high_pH_ci_extra_params <- left_join(high_ci_extra_params, high_extra_params)
+high_pH_TPC_parameters <- as_tibble(high_pH_ci_extra_params)%>% 
+  mutate(Treatment="Ambient")
+
+low_extra_params <- calc_params(gaussian_low_fit_nlsLM) %>%
+  pivot_longer(everything(), names_to =  'param', values_to = 'estimate')
+
+low_ci_extra_params <- Boot(gaussian_low_fit_nlsLM, f = function(x){unlist(calc_params(x))}, labels = names(calc_params(gaussian_low_fit_nlsLM)), R = 1000, method = 'case') %>%
+  confint(., method = 'bca') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'case bootstrap')
+  
+low_pH_ci_extra_params <- left_join(low_ci_extra_params, low_extra_params)
+low_pH_TPC_parameters <- as_tibble(low_pH_ci_extra_params) %>% 
+  mutate(Treatment="Low")
+
+#Presenting TPC parameter data as a table 
+TPC_parameters <- full_join(high_pH_TPC_parameters, low_pH_TPC_parameters) 
+as_tibble(TPC_parameters)
+  
+TPC_parameters %>% pivot_wider(names_from=Treatment, values_from=c(conf_lower, conf_upper, estimate))
+
+# TPC parameters plot
+ggplot(TPC_parameters, aes(forcats::fct_relevel(Treatment), estimate, color = Treatment)) +
+  geom_point(size = 2) +
+  geom_linerange(aes(ymin = conf_lower, ymax = conf_upper)) +
+  geom_hline(aes(yintercept = conf_lower, color = Treatment), alpha= 0.3, linetype = 2,
+             filter(TPC_parameters, method == 'case bootstrap')) +
+  geom_hline(aes(yintercept = conf_upper, color = Treatment), alpha= 0.3, linetype = 2,
+             filter(TPC_parameters, method == 'case bootstrap')) +
+  theme_minimal(base_size = 12) +
+  facet_wrap(~param, scales = 'free') +
+  scale_x_discrete('', labels = function(x) stringr::str_wrap(x, width = 5)) +
+  labs( title = "Calculation of Confidence Intervals for Model Parameters",
+        x = 'Treatment', y = 'Estimate', color = 'Treatment') +
+  scale_color_manual(values = c("orange", "cyan3")) +  # Set colors as orange and blue
+    theme(
+    axis.title.y = element_text(size = 8),
+    axis.text.x = element_text(size = 8),  # Adjust the size of the x-axis labels
+    axis.text.y = element_text(size = 8),  # Adjust the size of the y-axis labels
+    strip.text = element_text(size = 8, face = "bold"),  # Bold facet wrap headers
+    legend.text = element_text(size = 8),  # Adjust the size of legend text
+    legend.title = element_text(size = 8, face = "bold"))  # Bold legend title
+
+
+```
+
+
+
+# Sharpe School Field Thermal Performance Curve
+
+```{r}
+
+respo.rates.tpc <- respo.rates.tpc %>% dplyr::select(rate, temp, pH_Treatment)
+
+# Load in data and filter to keep just a single curve (low pH)
+low.pH <- filter(respo.rates.tpc, pH_Treatment == 'Low')
+# Load in data and filter to keep just a single curve (high pH)
+high.pH <- filter(respo.rates.tpc, pH_Treatment == 'Ambient')
+
+
+# Sharpe-Schoolfield Thermal Performance Curves
+
+# Get start values and fit model for low pH
+start_vals_low <- get_start_vals(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981')
+upper_low <- get_upper_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981')
+lower_low <- get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981')
+
+
+# Fit the Sharpe-Schoolfield model for low pH
+sharpe_schoolfield_mod_low <- nls_multstart(
+  rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref = 20),
+  data = low.pH,
+  iter = c(3, 3, 3, 3),
+  start_lower = start_vals_low - 10,
+  start_upper = start_vals_low + 10,
+  upper = get_upper_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  lower = get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  supp_errors = 'Y',
+  control = nls.lm.control(maxiter=1000),
+  convergence_count = FALSE
+)
+
+# Look at the model fit summary for low pH
+summary(sharpe_schoolfield_mod_low)
+
+# Get predictions for low pH
+preds_low <- data.frame(temp = seq(min(low.pH$temp), max(low.pH$temp), length.out = 100))
+preds_low <- broom::augment(sharpe_schoolfield_mod_low, newdata = preds_low)
+
+# Get start values and fit model for high pH
+start_vals_high <- get_start_vals(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981')
+
+# Fit the Sharpe-Schoolfield model for high pH
+sharpe_schoolfield_mod_high <- nls_multstart(
+  rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref = 20),
+  data = high.pH,
+  iter = c(3, 3, 3, 3),
+  start_lower = start_vals_high - 10,
+  start_upper = start_vals_high + 10,
+  lower = get_lower_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  upper = get_upper_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  supp_errors = 'Y',
+  control = nls.lm.control(maxiter=1000),
+  convergence_count = FALSE
+)
+
+# Look at the model fit summary for high pH
+summary(sharpe_schoolfield_mod_high)
+
+# Get predictions for high pH
+preds_high <- data.frame(temp = seq(min(high.pH$temp), max(high.pH$temp), length.out = 100))
+preds_high <- broom::augment(sharpe_schoolfield_mod_high, newdata = preds_high)
+
+# Combine low pH and high pH predictions
+combined_preds <- rbind(
+  cbind(preds_low, pH_Treatment = 'Low'),
+  cbind(preds_high, pH_Treatment = 'Ambient')
+)
+
+# Plot the results for both low pH and high pH
+ggplot(combined_preds) +
+  geom_image(aes(temp, rate, image=image, color = pH_Treatment),
+             respo.rates.tpc, size = 0.075, alpha = 0.5) +
+  geom_line(aes(temp, .fitted, color = pH_Treatment)) +
+  theme_bw() +
+  labs(
+    x = 'Temperature',
+    y = 'Rate',
+    title = 'Sharpe-Schoolfield Model Fit for TPC Curves Low (~7.7) and Ambient (8.0) pH'
+  ) +
+  scale_color_manual(values = c('Low' = 'cyan3', 'Ambient' = 'orange'))
+
+# Bootstrapping Sharpe Schoolfield
+
+sharpeshool_low_pH_fit <- nest(low.pH, data = c(temp, rate)) %>%
+  mutate(sharpeschoolhigh = map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 20),
+                        data = .x,
+                        iter = c(3,3,3,3),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         # create new temperature data
+         new_data = map(data, ~tibble(temp = seq(min(.x$temp), max(.x$temp), length.out = 100))),
+         # predict over that data,
+         preds =  map2(sharpeschoolhigh, new_data, ~augment(.x, newdata = .y)))
+
+# unnest predictions
+low_pH_preds <- select(sharpeshool_low_pH_fit, preds) %>%
+  unnest(preds)
+
+# Bootstrap models  Refit model using nlsLM
+sharpeschool_low_fit_nlsLM <- minpack.lm::nlsLM(rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref=20),
+                                   data = low.pH,
+                                   start = coef(sharpeshool_low_pH_fit$sharpeschoolhigh[[1]]),
+                                   lower = get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                   upper = get_upper_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                   control = nls.lm.control(maxiter=1000),
+                                   weights = rep(1, nrow(low.pH)))
+
+# Bootstrap using case resampling
+boot.low.pH <- Boot(sharpeschool_low_fit_nlsLM, method = 'case')
+hist(boot.low.pH, layout = c(2,2))
+
+# Create predictions of each bootstrapped model
+boot_low_preds <- boot.low.pH$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = row_number()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(low.pH$temp), max(low.pH$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = sharpeschoolhigh_1981(temp, r_tref, e, eh, th, tref=20))
+
+# Calculate bootstrapped confidence intervals
+boot_low_conf_preds <- boot_low_preds %>%
+  group_by(temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975)) %>%
+  ungroup()
+
+# Plot bootstrapped CIs
+boot.low.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), data = low_pH_preds, col = 'cyan3') +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper), data = boot_low_conf_preds, fill = 'cyan3', alpha = 0.3) +
+  geom_image(aes(temp, rate, image = image), data = low.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Respiration Rate',
+       title = 'Respiration Rate (pH ~7.9)') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Plot bootstrapped predictions
+boot.low.pH.plot.predictions <- ggplot() +
+  geom_line(aes(temp, .fitted), data = low_pH_preds, col = 'cyan3') +
+  geom_line(aes(temp, pred, group = iter), data = boot_low_preds, col = 'cyan3', alpha = 0.007) +
+  geom_image(aes(temp, rate, image = image), data = low.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       title = 'Respiration Rate (pH ~7.9)') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+sharpeshool_high_pH_fit <- nest(high.pH, data = c(temp, rate)) %>%
+  mutate(sharpeschoolhigh = map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 20),
+                        data = .x,
+                        iter = c(3,3,3,3),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         # create new temperature data
+         new_data = map(data, ~tibble(temp = seq(min(.x$temp), max(.x$temp), length.out = 100))),
+         # predict over that data,
+         preds =  map2(sharpeschoolhigh, new_data, ~augment(.x, newdata = .y)))
+
+# unnest predictions
+high_pH_preds <- select(sharpeshool_high_pH_fit, preds) %>%
+  unnest(preds)
+
+# Refit model using nlsLM for high pH
+sharpeschool_high_fit_nlsLM <- minpack.lm::nlsLM(rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref=20),
+                                    data = high.pH,
+                                    start = coef(sharpeshool_high_pH_fit$sharpeschoolhigh[[1]]),
+                                    lower = get_lower_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                    upper = get_upper_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                    control = nls.lm.control(maxiter=1000),
+                                    weights = rep(1, nrow(high.pH)))
+
+# Bootstrap using case resampling
+boot.high.pH <- Boot(sharpeschool_high_fit_nlsLM, method = 'case')
+hist(boot.high.pH, layout = c(2,2))
+
+# Create predictions of each bootstrapped model
+boot_high_preds <- boot.high.pH$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = row_number()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(high.pH$temp), max(high.pH$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = sharpeschoolhigh_1981(temp, r_tref, e, eh, th, tref=20))
+
+# Calculate bootstrapped confidence intervals
+boot_high_conf_preds <- boot_high_preds %>%
+  group_by(temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975)) %>%
+  ungroup()
+
+# Plot bootstrapped CIs
+boot.high.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), data = high_pH_preds, col = 'orange') +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper), data = boot_high_conf_preds, fill = 'orange', alpha = 0.3) +
+  geom_image(aes(temp, rate, image = image), data = high.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'Respiration Rate',
+       title = 'Respiration Rate (pH ~7.7)') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Plot bootstrapped predictions
+boot.high.pH.plot.predictions <- ggplot() +
+  geom_line(aes(temp, .fitted), data = high_pH_preds, col = 'orange') +
+  geom_line(aes(temp, pred, group = iter), data = boot_high_preds, col = 'orange', alpha = 0.007) +
+  geom_image(aes(temp, rate, image = image), data = high.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       title = 'Respiration Rate (pH ~7.7)') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Combine the plots
+boot.low.pH.plot + boot.low.pH.plot.predictions
+
+# Combine the plots
+boot.high.pH.plot + boot.high.pH.plot.predictions
+
+```
+
+
+
+```{r}
+# get parameters of fitted model
+sharpeschool_high_parameters <- broom::tidy(sharpeschool_high_fit_nlsLM) %>%
+  select(param = term, estimate)
+
+# calculate confidence intervals of models
+
+# CIs from residual resampling
+ci_sharpeschool_high_parameters_1 <- Boot(sharpeschool_high_fit_nlsLM, method = 'residual') %>%
+  confint(., method = 'bca') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'residual bootstrap')
+
+ci_sharpeschool_high_parameters <- left_join(ci_sharpeschool_high_parameters_1, sharpeschool_high_parameters) %>% 
+  mutate(Treatment="Ambient")
+
+# get parameters of fitted model
+sharpeschool_low_parameters <- broom::tidy(sharpeschool_low_fit_nlsLM) %>%
+  select(param = term, estimate)
+
+# calculate confidence intervals of models
+
+# asymptotic confidence intervals estimate
+ci_sharpeschool_low_parameters_1 <- nlstools::confint2(sharpeschool_low_fit_nlsLM, method = 'asymptotic') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'asymptotic')
+
+# profile likelihood confidence intervals estimate
+ci_sharpeschool_low_parameters_2 <- confint(sharpeschool_low_fit_nlsLM) %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'profile')
+
+# CIs from case resampling
+ci_sharpeschool_low_parameters_3 <- confint(sharpeschool_low_fit_nlsLM, method = 'bca') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'case bootstrap')
+
+# CIs from residual resampling
+ci_sharpeschool_low_parameters_4 <- Boot(sharpeschool_low_fit_nlsLM, method = 'residual') %>%
+  confint(., method = 'bca') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'residual bootstrap')
+
+ci_sharpeschool_low_parameters <- bind_rows(ci_sharpeschool_low_parameters_1, ci_sharpeschool_low_parameters_2, ci_sharpeschool_low_parameters_3, ci_sharpeschool_low_parameters_4) %>%
+  left_join(., sharpeschool_low_parameters) %>% 
+  mutate(Treatment="Low")
+
+# CI gaussian low ggplot plot 
+ggplot(ci_sharpeschool_low_parameters, aes(forcats::fct_relevel(method, c('profile', 'asymptotic')), estimate, col = method)) +
+  geom_hline(aes(yintercept = conf_lower), linetype = 2, filter(ci_sharpeschool_low_parameters, method == 'profile')) +
+  geom_hline(aes(yintercept = conf_upper), linetype = 2, filter(ci_sharpeschool_low_parameters, method == 'profile')) +
+  geom_point(size = 4) +
+  geom_linerange(aes(ymin = conf_lower, ymax = conf_upper)) +
+  theme_bw() +
+  facet_wrap(~param, scales = 'free') +
+  scale_x_discrete('', labels = function(x) stringr::str_wrap(x, width = 10)) +
+  labs(title = 'Calculation of Confidence Intervals for Model Parameters', y = 'Estimate', color = 'Method') +
+  theme(axis.text.x = element_text(size = 6, hjust = 0.5), plot.title = element_text(hjust = 0.5))
+
+# CI gaussian high ggplot plot
+ggplot(ci_sharpeschool_high_parameters, aes(forcats::fct_relevel(method, c('profile', 'asymptotic')), estimate, col = method)) +
+  geom_hline(aes(yintercept = conf_lower), linetype = 2, filter(ci_sharpeschool_high_parameters, method == 'profile')) +
+  geom_hline(aes(yintercept = conf_upper), linetype = 2, filter(ci_sharpeschool_high_parameters, method == 'profile')) +
+  geom_point(size = 4) +
+  geom_linerange(aes(ymin = conf_lower, ymax = conf_upper)) +
+  theme_bw() +
+  facet_wrap(~param, scales = 'free') +
+  scale_x_discrete('', labels = function(x) stringr::str_wrap(x, width = 10)) +
+  labs(title = 'Calculation of Confidence Intervals for Model Parameters', y = 'Estimate', color = 'Method') +
+  theme(axis.text.x = element_text(size = 6, hjust = 0.5), plot.title = element_text(hjust = 0.5))
+
+#Presenting TPC parameter data as a table 
+sharpeschool_tpc_parameters <- full_join(ci_sharpeschool_high_parameters, ci_sharpeschool_low_parameters) 
+as_tibble(sharpeschool_tpc_parameters)
+
+# Create the plot
+ggplot(sharpeschool_tpc_parameters, aes(x = method, y = estimate, ymin = conf_lower, ymax = conf_upper, color = Treatment)) +
+  geom_hline(aes(yintercept = conf_lower, color = Treatment), alpha= 0.3, linetype = 2, filter(sharpeschool_tpc_parameters, method == 'profile')) +
+  geom_hline(aes(yintercept = conf_upper, color = Treatment), alpha= 0.3, linetype = 2, filter(sharpeschool_tpc_parameters, method == 'profile')) +
+  geom_point(size = 4, position = position_dodge(width = 1)) +  # Adjust dodge.width as needed
+  geom_linerange(aes(ymin = conf_lower, ymax = conf_upper), position = position_dodge(width = 1)) +
+  theme_minimal() +
+  facet_wrap(~param, scales = 'free') +
+  scale_x_discrete('', labels = function(x) stringr::str_wrap(x, width = 10)) +
+  labs(
+    title = "Calculation of Confidence Intervals for Model Parameters",
+    y = "Estimate",
+    color = "Treatment") +
+  scale_color_manual(values = c("cyan3", "orange")) +
+    theme(
+    axis.title.y = element_text(size = 6),
+    axis.text.x = element_text(size = 6),  # Adjust the size of the x-axis labels
+    axis.text.y = element_text(size = 6),  # Adjust the size of the y-axis labels
+    strip.text = element_text(size = 10, face = "bold"),  # Bold facet wrap headers
+    legend.text = element_text(size = 6),  # Adjust the size of legend text
+    legend.title = element_text(size = 8, face = "bold"))  # Bold legend title
+
+#Extracting TPC parameters 
+
+sharpeschool_high_extra_params <- calc_params(sharpeschool_high_fit_nlsLM) %>%
+  pivot_longer(everything(), names_to =  'param', values_to = 'estimate')
+
+sharpeschool_high_ci_extra_params <- Boot(sharpeschool_high_fit_nlsLM, f = function(x){unlist(calc_params(x))}, labels = names(calc_params(sharpeschool_high_fit_nlsLM)), R = 1000, method = 'case') %>%
+  confint(., method = 'bca') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'case bootstrap')
+
+sharpeschool_high_pH_ci_extra_params <- left_join(sharpeschool_high_ci_extra_params, sharpeschool_high_extra_params)
+sharpeschool_high_pH_TPC_parameters <- as_tibble(sharpeschool_high_pH_ci_extra_params)%>% 
+  mutate(Treatment="Ambient")
+
+sharpeschool_low_extra_params <- calc_params(sharpeschool_low_fit_nlsLM) %>%
+  pivot_longer(everything(), names_to =  'param', values_to = 'estimate')
+
+sharpeschool_low_ci_extra_params <- Boot(sharpeschool_low_fit_nlsLM, f = function(x){unlist(calc_params(x))}, labels = names(calc_params(sharpeschool_low_fit_nlsLM)), R = 1000, method = 'case') %>%
+  confint(., method = 'bca') %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'case bootstrap')
+  
+sharpeschool_low_pH_ci_extra_params <- left_join(sharpeschool_low_ci_extra_params, sharpeschool_low_extra_params)
+sharpeschool_low_pH_TPC_parameters <- as_tibble(sharpeschool_low_pH_ci_extra_params) %>% 
+  mutate(Treatment="Low")
+
+#Presenting TPC parameter data as a table 
+sharpeschool_TPC_parameters <- full_join(sharpeschool_high_pH_TPC_parameters, sharpeschool_low_pH_TPC_parameters) 
+as_tibble(sharpeschool_TPC_parameters)
+  
+#selecting for parameters we want for the figures
+sharpeschool_graph_TPC_parameters <- sharpeschool_TPC_parameters %>% 
+  subset(param %in% c('ctmin', 'ctmax', 'topt', 'rmax', 'breadth', 'e', 'eh', 'q10'))
+
+sharpeschool_graph_TPC_parameters %>% pivot_wider(names_from=Treatment, values_from=c(conf_lower, conf_upper, estimate))
+  
+
+# TPC parameters plot
+ggplot(sharpeschool_graph_TPC_parameters, aes(forcats::fct_relevel(Treatment), estimate, color = Treatment)) +
+  geom_point(size = 2) +
+  geom_linerange(aes(ymin = conf_lower, ymax = conf_upper)) +
+  theme_bw(base_size = 12) +
+  facet_wrap(~param, scales = 'free') +
+  scale_x_discrete('', labels = function(x) stringr::str_wrap(x, width = 10)) +
+  labs(title = 'Calculation of Confidence Intervals Between
+       Thermal Performance Parameters',
+       x = 'Treatment',
+       y = 'Estimate',
+       color = 'Treatment') +
+  scale_color_manual(values = c("orange", "cyan3")) +  # Set colors as orange and blue
+  theme(plot.title = element_text(hjust = 0.5))  # Center the plot title
+
+
+```
+
+
+```{r}
+
+joule.rates.dataset <- read_csv(here::here("Data", "Thinned_Respirometry_Data", "Joule.Rates.Dataset.csv"), show_col_types = FALSE) %>% 
+  mutate(Temp_Treatment = as.factor(Temp_Treatment),
+         pH_Treatment = as.factor(pH_Treatment)) %>% 
+  filter(pH_Treatment != "Sump")
+
+joule.rates.dataset <- joule.rates.datase  %>%
+  select(Snail_ID, Temp_Treatment, pH_Treatment, kcal.gram.hour, joules.gram.hour, Temp.C, Salinity, Pressure, Volume_mL, Tank_ID, mean_pH)
+
+# Perform a two-way ANOVA
+anova_result <- anova(lm(joules.gram.hour ~ Temp_Treatment * pH_Treatment, data = joule.rates.dataset))
+
+# Print the ANOVA table
+print(anova_result)
+# significant p value (1.101e-08 ***) for temp treatment but not for ph treatment (0.1235)
+
+# Perform a Tukey's HSD test
+tukey_result <- TukeyHSD(aov(joules.gram.hour ~ Temp_Treatment * pH_Treatment, data = joule.rates.dataset))
+
+# Print the Tukey's HSD test
+print(tukey_result)
+
+# joule rate summary statistics 
+joule.rates.summary <- joule.rates.dataset %>%
+  filter(pH_Treatment != "Sump") %>%
+  group_by(Temp_Treatment, pH_Treatment) %>%
+  summarize(
+    Mean_joule_sec = mean(joules.gram.hour),
+    Median_joules.gram.hour = median(joules.gram.hour),
+    Min_joules.gram.hour = min(joules.gram.hour),
+    Max_joules.gram.hour = max(joules.gram.hour),
+    SD_joules.gram.hour = sd(joules.gram.hour),
+    SE_joules.gram.hour = sd(joules.gram.hour) / sqrt(n()),
+    N_joules.gram.hour = n()
+  ) 
+  
+# Print the ANOVA table
+print(joule.rates.summary)
+
+mean_joule_sec <- joule.rates.summary %>%
+  group_by(Temp_Treatment,pH_Treatment) %>%
+  select(Temp_Treatment, pH_Treatment, Mean_joule_sec) 
+
+# Pivot the data to have Temp_Treatment as rows and pH_Treatment as columns
+pivot_mean_joule_sec <- pivot_wider(mean_joule_sec, names_from = pH_Treatment, values_from = Mean_joule_sec)
+
+# Calculate the percent difference
+difference_mean_joule_hr <- pivot_mean_joule_sec %>%
+  group_by(Temp_Treatment) %>%
+  mutate(Percent_Difference = (Ambient-Low)) %>% 
+   mutate(Percent_Difference = Percent_Difference/Low * 100) %>% 
+  mutate(Percent_Difference=paste0(Percent_Difference,"%"))
+
+# Rename columns
+colnames(difference_mean_joule_hr) <- c("Temperature Treatment", "Ambient Energy Expenditure (J g^−1 h^−1)", "Low Energy Expenditure (J g^−1 h^−1)", "Percent Difference")
+
+#  "Low" has a lower value than "Ambient," and the difference is expressed as a negative percentage of how much lower "Low" is compared to "Ambient." (this is without weight normalization)
+
+# Print the resulting data frame
+print(difference_mean_joule_hr)
+
+# Export the table
+write.csv(difference_mean_joule_hr, here::here("Output", "percent_difference_table.csv"), row.names = FALSE)
+```
+
+```{r}
+# Calculating Metablic Information from Respiration Rates 
+
+# Reading in carbonate data for analysis
+  Carb <- read_csv(here("Data", "Mesocosm_Data", "mesocosm_summary_table.csv")) %>% 
+    mutate(Temp_Treatment=Temp_Treatment, pH_Treatment=as.factor(pH_Treatment)) %>%
+    dplyr::select(Temp_Treatment, pH_Treatment, Mean_pH, Mean_TA, Mean_DO_mgL)
+
+  # Reading in data for analysis 
+  ambient.pH.respo <- respo.rates.dataset %>% 
+  filter(pH_Treatment == "Ambient") 
+  
+  ambient.pH.respo <- ambient.pH.respo %>% 
+    left_join(TA, by = join_by(Temp_Treatment, pH_Treatment)) 
+
+  # Calculating Q10 values for respiration rates
+  Ambient_pH_Q10 <- Q10(R_vec=ambient.pH.respo$umolO2.g.hr, T_vec=ambient.pH.respo$umolO2.g.hr, model = TRUE) #larger temperature sensitivity
+  
+  # Calculate the metabolic scaling coefficient
+  Ambient_pH_b <- calc_b(mass=ambient.pH.respo$Ash_Free_Dry_Weight, MO2=ambient.pH.respo$umolO2.g.hr, method = "nls", plot = "linear", b0_start = 1)
+
+  # Calculate E - the slope of the relationship between-ln(x) and 1/(kB T), where kB is the Boltzmann constant expressed in eV/K.
+  Ambient_pH_E <- calc_E(x=ambient.pH.respo$umolO2.g.hr, temp=ambient.pH.respo$Temp.C)
+  
+  # Respiratory Quotient ratio of CO2 produced to O2 consumed.
+  ambient_pH_RQ <- RQ(o2=ambient.pH.respo$umolO2.hr, o2_unit="umol_per_l", pH=ambient.pH.respo$Mean_pH, TA=ambient.pH.respo$Mean_TA,
+     temp=ambient.pH.respo$Temp.C, sal=ambient.pH.respo$Salinity, atm_pres=ambient.pH.respo$Pressure)
+  
+  # Predicts the pH of seawater after a defined amount of oxygen consumption. #80% O^2 % for the mean O^2 mgL at 26 degrees C
+  ambient_predicted_pH <- predict_pH(start_o2 = 100, end_o2 = 90, start_pH=7.9, temp=ambient.pH.respo$Temp.C, sal=ambient.pH.respo$Salinity, 
+                                 RQ = 1, TA = ambient.pH.respo$Mean_TA)
+
+  
+  # Used to Predict Biological Parameters
+  #adj_by_temp(meas_temp = ambient.pH.respo$Temp.C, meas_x = ambient.pH.respo$umolO2.gram.hr, temp_new = 23,
+              #method = "Q10", Q10 = Ambient_pH_Q10$Q10, E = Ambient_pH_E, show_coef = TRUE, plot_fit = TRUE)
+  
+  low.pH.respo <- respo.rates.dataset %>% 
+  filter(pH_Treatment == "Low") %>% 
+  left_join(TA, by = join_by(Temp_Treatment, pH_Treatment))
+
+  #calculating Q10 values for respiration rates
+  low_pH_Q10 <- Q10(R_vec=low.pH.respo$umolO2.g.hr, T_vec=low.pH.respo$umolO2.g.hr, model = TRUE) 
+  
+  #Calculate the metabolic scaling coefficient
+  low_pH_b <- calc_b(mass=low.pH.respo$Ash_Free_Dry_Weight, MO2=low.pH.respo$umolO2.g.hr, method = "nls", plot = "linear", b0_start = 1)
+
+  #Calculate E - the slope of the relationship between-ln(x) and 1/(kB T), where kB is the Boltzmann constant expressed in eV/K.
+  low_pH_E <- calc_E(x=low.pH.respo$umolO2.g.hr, temp=low.pH.respo$Temp.C)
+  
+  # Respiratory Quotient ratio of CO2 produced to O2 consumed.
+  low_pH_RQ <-RQ(o2=low.pH.respo$umolO2.hr, o2_unit="umol_per_l", pH=low.pH.respo$Mean_pH, TA=low.pH.respo$Mean_TA,
+     temp=low.pH.respo$Temp.C, sal=low.pH.respo$Salinity, atm_pres=low.pH.respo$Pressure)
+  
+  #Predicts the pH of seawater after a defined amount of oxygen consumption. #80% O^2 % for the mean O^2 mgL at 26 degrees C
+  low_predicted_pH <- predict_pH(start_o2 = 100, end_o2 = 90, start_pH=7.6, temp=low.pH.respo$Temp.C, sal=low.pH.respo$Salinity, 
+                                 RQ = 1, TA = low.pH.respo$Mean_TA)
+  
+  # Predict Biological Parameters 
+  #adj_by_temp(meas_temp = ambient.pH.respo$Temp.C, meas_x = ambient.pH.respo$umolO2.g.hr, temp_new = 23,
+              #method = "Q10", Q10 = low_pH_Q10$Q10, E = low_pH_E, show_coef = TRUE, plot_fit = TRUE)
+
+# Paine 1971 Q10 of 2.64 for all ambient temperatures, and an RQ of 0.85 
+
+# Example placeholders for your calculated values - replace these with your actual results
+ambient_pH_Q10_value <- Ambient_pH_Q10$Q10
+ambient_pH_b_value <- Ambient_pH_b$b
+ambient_pH_E_value <- Ambient_pH_E
+ambient_pH_RQ_value <- mean(ambient_pH_RQ)
+
+low_pH_Q10_value <- low_pH_Q10$Q10
+low_pH_b_value <- low_pH_b$b
+low_pH_E_value <- low_pH_E
+low_pH_RQ_value <- mean(low_pH_RQ)
+
+# Create a dataframe to store the values in a tabular format
+parameters_table <- data.frame(
+  Parameter = c("Q10", "Metabolic Scaling Coefficient b", "E", "Respiratory Quotient (RQ)"),
+  Ambient_pH = c(ambient_pH_Q10_value, ambient_pH_b_value, ambient_pH_E_value, ambient_pH_RQ_value),
+  Low_pH = c(low_pH_Q10_value, low_pH_b_value, low_pH_E_value, low_pH_RQ_value)
+)
+
+# Print the table
+print(parameters_table)
+write_csv(parameters_table, here("Output", "Metabolic_Parameters.csv"))
+```
+
+
+```{r}
+
+# Reading in the metabolic parameters data
+parameters_table <- read_csv(here("Output", "Metabolic_Parameters.csv"))
+
+# Let's assume we want to perform an ANOVA to test if there are significant differences 
+# between the ambient and low pH treatments for each parameter.
+
+# Melting the data for ANOVA
+parameters_long <- parameters_table %>%
+  pivot_longer(cols = -Parameter, names_to = "Treatment", values_to = "Value")
+
+# Performing ANOVA for each parameter
+anova_results <- parameters_long %>%
+  group_by(Parameter) %>%
+  do(tidy(aov(Value ~ Treatment, data = .)))
+
+# Viewing the results
+print(anova_results)
+
+# calculate estimated parameters
+params <- d_stack %>%
+  mutate(., params = map(fit, calc_params)) %>%
+  select(-fit) %>%
+  unnest(params)
+
+# get averaged parameters based on model weights
+ave_params <- left_join(params, select(d_ic, model_name, weight)) %>%
+  summarise(., across(rmax:skewness, function(x){sum(x*.$weight)})) %>%
+  mutate(model_name = 'model average')
+#> Joining with `by = join_by(model_name)`
+
+# show them
+bind_rows(select(params, model_name, rmax:skewness), ave_params) %>%
+  mutate_if(is.numeric, round, 2)
+```

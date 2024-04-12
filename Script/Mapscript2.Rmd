@@ -1,0 +1,227 @@
+---
+title: "Map"
+author: "R.J. Dellinger"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+
+```{r}
+library(worrms)
+library(dplyr)
+library(robis)
+library(ggmap)
+library(raster)
+library(ncdf4)
+library(lubridate)
+library(broom)
+library(spocc) ##search multiple databases
+library(dplyr)
+library(rgbif) 
+#webscraping
+library(jsonlite) #https://cran.r-project.org/web/packages/jsonlite/
+library(httr)
+```
+
+# extracting species occurance info 
+```{r}
+sp_tegula_fun <- wm_name2id(name = "Tegula funebralis")
+
+sp_taxo <- wm_record(id = sp_tegula_fun)
+occs <- robis::occurrence(taxonid = my_sp_taxo$AphiaID, mof = TRUE, dna = TRUE)
+
+
+ggplot(occs) +
+  geom_bar(aes(date_year), stat = "count", width = 1)
+
+
+```
+
+
+```{r}
+
+sci.name <-unique(occs$scientificName) 
+obs<-occ(query = sci.name, from=c('gbif','bison'), limit = 10000, has_coords = TRUE)
+
+df<-obs$gbif$data$Tegula_funebralis
+unique(df$institutionCode) ##list sources of GBIF data
+obs<-occ2df(obs)
+out<-occ_search(scientificName=sci.name, limit=10000, hasCoordinate = TRUE, year = NULL)
+out$meta
+
+```
+
+
+
+```{r}
+joined_species <- left_join(obs,occs)
+```
+
+# webscraping data 
+```{r}
+AphiaID <- unique(sp_taxo$AphiaID)
+#Build the URL to get the data from
+url <- sprintf("https://www.marinespecies.org/rest/AphiaClassificationByAphiaID/%d", AphiaID);
+
+#Get the actual data from the URL
+classificationTree <- fromJSON(url)
+
+#Walk the classification tree
+currentTreeItem = classificationTree
+while (!is.null(currentTreeItem )) {
+	print(sprintf("ID: %d, RANK: %s, ScientificName: %s",
+		currentTreeItem$AphiaID,
+		currentTreeItem$rank,
+		currentTreeItem$scientificname
+	));
+	#You can access the variables individually
+	#print(currentTreeItem$AphiaID);
+	#print(currentTreeItem$scientificname);
+	#print(currentTreeItem$rank);
+	
+	#Get next item in the tree
+	currentTreeItem <- currentTreeItem$child;
+}
+```
+
+
+```{r}
+bb_occs <- bbox(cbind(my_occs$decimalLongitude, my_occs$decimalLatitude))
+world <- map_data("world")
+worldmap <- ggplot(world, aes(x=long, y=lat)) +
+  geom_polygon(aes(group=group)) +
+  scale_y_continuous(breaks = (-2:2) * 30) +
+  scale_x_continuous(breaks = (-4:4) * 45) +
+  theme(panel.background = element_rect(fill = "steelblue")) +
+  coord_equal()
+
+(occ_map <- worldmap + geom_point(data = my_occs, aes(x = decimalLongitude, y = decimalLatitude),
+                                 colour = "darkorange", shape = 21, alpha = 2/3))
+```
+
+# extracting environment info for species 
+
+
+```{r}
+sst_prep <- function(path = "~/.spenv/noaa_sst") {
+  x <- file.path(path, "sst.mnmean.nc")
+  if (!file.exists(x)) {
+    dir.create(dirname(x), recursive = TRUE, showWarnings = FALSE)
+    download.file("ftp://ftp.cdc.noaa.gov/Datasets/noaa.oisst.v2/sst.mnmean.nc", destfile = x)
+  }
+  raster::brick(x, varname = "sst")
+}
+sst_dat <- sst_prep()
+
+sp_extract_gridded_date <- function(x, from = "noaa_sst", latitude = NULL,
+                                    longitude = NULL, samp_date = NULL, origin = as.Date("1800-1-1")) {
+
+  x <- spenv_guess_latlondate(x, latitude, longitude, samp_date)
+  switch(from,
+         noaa_sst = {
+           mb <- sst_prep()
+           out <- list()
+           x <- x[ !is.na(x$date), ]
+           x$date <- as.Date(x$date)
+           x <- x[x$date >= min(mb@z[["Date"]]), ]
+           x$lon_adj <- x$longitude
+           x$lon_adj[x$lon_adj < 0] <- x$lon_adj[x$lon_adj < 0] + 360
+           for (i in seq_len(NROW(x))) {
+             out[[i]] <- get_env_par_space_x_time(mb, x[i, ], origin = origin)
+           }
+           x$sst <- unlist(out)
+           x
+         }
+  )
+}
+
+spenv_guess_latlondate <- function(x, lat = NULL, lon = NULL, samp_date = NULL) {
+  xnames <- names(x)
+  if (is.null(lat) && is.null(lon)) {
+    lats <- xnames[grep("^(lat|latitude)$", xnames, ignore.case = TRUE)]
+    lngs <- xnames[grep("^(lon|lng|long|longitude)$", xnames, ignore.case = TRUE)]
+
+    if (length(lats) == 1 && length(lngs) == 1) {
+      if (length(x) > 2) {
+        message("Assuming '", lngs, "' and '", lats,
+                "' are longitude and latitude, respectively")
+      }
+      x <- rename(x, setNames('latitude', eval(lats)))
+      x <- rename(x, setNames('longitude', eval(lngs)))
+    } else {
+      stop("Couldn't infer longitude/latitude columns, please specify with 'lat'/'lon' parameters", call. = FALSE)
+    }
+  } else {
+    message("Using user input '", lon, "' and '", lat,
+            "' as longitude and latitude, respectively")
+    x <- plyr::rename(x, setNames('latitude', eval(lat)))
+    x <- plyr::rename(x, setNames('longitude', eval(lon)))
+  }
+
+  if(is.null(samp_date)){
+    dates <- xnames[grep("date", xnames, ignore.case = TRUE)]
+    if(length(dates) == 1){
+      if(length(x) > 2){
+        message("Assuming '", dates, "' are sample dates")
+      }
+      x <- rename(x, setNames('date', eval(dates)))
+    } else {
+      stop("Couldn't infer sample date column, please specify with 'date' parameter", call. = FALSE)
+    }
+
+  } else {
+    message("Using user input '", samp_date, "' as sample date")
+    x <- plyr::rename(x, setNames('date', eval(samp_date)))
+  }
+
+}
+
+get_env_par_space_x_time <- function(
+  env_dat, occ_dat, origin = as.Date("1800-1-1")){
+
+  # calculate starting julian day for each month in env_dat
+  month_intervals <- as.numeric(env_dat@z[["Date"]] - origin)
+  # calculate julian day for the focal date (eventDate in occ_dat)
+  focal_date <- as.numeric(occ_dat$date - origin)
+
+  # extract environmental variable (SST here) for this point
+  as.numeric(raster::extract(
+    env_dat,
+    cbind(occ_dat$lon_adj, occ_dat$latitude),
+    layer = findInterval(focal_date, month_intervals),
+    nl = 1
+  ))
+}
+```
+
+# using the functions from above to findd the associated inforamtionfor species 
+
+```{r}
+
+my_occs <- my_occs %>% mutate(individualCount=case_when(is.na(individualCount) ~ "1", TRUE ~ individualCount)) %>% 
+  mutate(individualCount=as.numeric(individualCount))
+
+sole_occs <- as_data_frame(filter(
+  my_occs, !is.na(depth) & !is.na(date_year) & !is.na(individualCount) & date_year >= 1981))
+
+sole_sst <- sp_extract_gridded_date(x = sole_occs,
+                                    latitude = "decimalLatitude", longitude = "decimalLongitude", samp_date = "eventDate")
+sole_sst$month <- month(sole_sst$date)
+
+(sole_sst_plot <- (ggplot(sole_sst, aes(x = longitude, y = latitude)) +
+                     geom_point(aes(colour = sst), alpha = 2/3) +
+                     scale_colour_gradient(low = "blue", high = "red") +
+                     facet_wrap(~ month))
+)
+(sole_sst_trends <- ggplot(sole_sst, aes(x = date_year, y = sst)) +
+  geom_point(colour = "steelblue", alpha = 1/3) +
+  geom_smooth(method = "lm", colour = "darkorange") +
+  facet_wrap(~ month)
+)
+```
+

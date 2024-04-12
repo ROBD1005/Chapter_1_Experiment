@@ -22,6 +22,23 @@ library(ggsignif)
 library(respirometry)
 ```
 
+```{r}
+# plot themes for ggplot
+common_theme <- theme_minimal(base_family="serif") +
+  theme(
+    plot.background = element_rect(fill = "white", colour = "white"),  # Set the background to white
+    text = element_text(family = "serif", color="black"),
+    strip.text = element_text(hjust = 0.5, size = 12), 
+    strip.text.x = element_text(vjust = 0.5, size = 12), 
+    strip.text.y = element_text(vjust = 0.5, size = 12), 
+    axis.title.x = element_text(margin = margin(t = 10), size = 12, hjust = 0.5),
+    axis.title.y = element_text(margin = margin(r = 10), size = 12, vjust = 0.5),  # Same size for both axes
+    axis.text = element_text(size = 10),  # Same size for both axes
+    plot.title = element_text(hjust = 0.5, size = 14),
+    plot.margin = margin(t = 1, r = 1, b = 1, l = 1, unit = "cm")
+  )
+```
+
 
 ### Mesocosm Daily Check Data and pH Calculations ###
 
@@ -38,7 +55,7 @@ pHData <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_Daily_Datasheet.csv")
          Temp_Treatment=as.factor(Temp_Treatment), 
          pH_Treatment=as.factor(pH_Treatment),
          Tank_ID=as.factor(Tank_ID)) %>% 
-  select(Temp_C, mV, Salinity, TrisCalDate, Date, Tank_ID, pH_Treatment, Temp_Treatment)
+  dplyr::select(Temp_C, mV, Salinity, TrisCalDate, Date, Tank_ID, pH_Treatment, Temp_Treatment)
 
 # Take the tris calibration data by each date and use them to calculate pH
 pHSlope <- pHcalib %>%
@@ -46,7 +63,7 @@ pHSlope <- pHcalib %>%
   summarise(fitpH = list(lm(mVTris ~ TTris, data = cur_data()))) %>%
   mutate(tidy_fit = map(fitpH, broom::tidy)) %>%
   unnest(tidy_fit) %>%
-  select(TrisCalDate, term, estimate) %>%
+  dplyr::select(TrisCalDate, term, estimate) %>%
   pivot_wider(names_from = term, values_from = estimate)
 
 # Calculate the pH values using the slope and intercept from the calibration data
@@ -57,7 +74,7 @@ pHjoined <- pHData %>%
 
 pHcalc <- pHjoined %>%
   mutate(pH = seacarb::pH(Ex = mV, Etris = mVTris_calc, S = Salinity, T = Temp_C)) %>%
-  select(Date, Tank_ID, pH_Treatment, Temp_Treatment, pH)
+  dplyr::select(Date, Tank_ID, pH_Treatment, Temp_Treatment, pH)
 
 # Join the calculated pH values back to the mesocosm daily data
 mesocosm_daily_data <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_Daily_Datasheet.csv")) %>%
@@ -149,7 +166,7 @@ TAdata_combined <- bind_rows(TAdata_09012022, TAdata_08222022, TAdata_08162022) 
   #filter Tank_ID == CRM and Junk
   filter(Tank_ID != "CRM", Tank_ID != "Junk") %>%
   arrange(Date, Tank_ID) %>% 
-  select(Date, Tank_ID, TA, TA_evap)
+  dplyr::select(Date, Tank_ID, TA, TA_evap)
 
 mesocosm.daily.data.pH <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_pHProbe_Data_calculated.csv"))
 
@@ -231,7 +248,7 @@ ggplot(mesocosm.data, aes(x = Temp_C, y = Salinity)) +
 
 oxygen.data <- mesocosm.data %>%
   filter(pH_Treatment != "Sump") %>% 
-  select(DO_mgL, DO_Percent, Temp_C, pH_Treatment, Temp_Treatment) %>%
+  dplyr::select(DO_mgL, DO_Percent, Temp_C, pH_Treatment, Temp_Treatment) %>%
   na.omit()
 
 # Linear regression for Temperature and Dissolved Oxygen
@@ -277,71 +294,6 @@ print(paste("R-squared: DO (%)", r_squared))
 
 
 
-```{r}
-
-mesocosm.data <- read_csv(here::here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"))
-
-#summary statistics for pH by treatment
-ph.means <- mesocosm.data %>%
-  group_by(pH_Treatment) %>%
-  dplyr::summarize(Mean_pH = mean_pH(pH, na.rm = TRUE), #used to average pH nased on H+ ions
-            Sd_pH = sd(pH, na.rm = TRUE))
-
-print(ph.means)
-
-#summary statistics for pH by treatment
-pCO2.means <- mesocosm.data %>%
-  group_by(pH_Treatment) %>%
-  dplyr::summarize(Mean_pCO2 = mean(pCO2, na.rm = TRUE),
-            Sd_pCO2 = sd(pCO2, na.rm = TRUE))
-
-print(pCO2.means)
-
-# Assuming `mesocosm.data` is already loaded and you have created `ph.data` as per the previous code
-ph.data <- mesocosm.data %>%
-  select(pH_Treatment, pH) %>%
-  filter(pH_Treatment != "Sump") # Filter out the "Sump" treatment
-
-ph.data <- na.omit(ph.data)
-
-# Perform t-test to compare means
-t_test_result <- t.test(pH ~ pH_Treatment, data = ph.data)
-
-# Print the t-test results
-print(t_test_result)
-
-
-# Calculate IQR threshold
-outlier.data <- ph.data %>%
-  group_by(pH_Treatment) %>%
-  mutate(Q1 = quantile(pH, 0.25),
-         Q3 = quantile(pH, 0.75),
-         IQR = Q3 - Q1,
-         Lower = Q1 - 1.5 * IQR,
-         Upper = Q3 + 1.5 * IQR) %>%
-  filter(pH >= Lower & pH <= Upper)
-
-# Create a boxplot with significance annotation
-# Basic plot without stat_signif
-t_test_ph <- ggplot(ph.data, aes(x = pH_Treatment, y = pH, fill = pH_Treatment)) +
-  scale_fill_manual(values = c("Ambient" = "darkcyan", "Low" = "cyan3"),
-                    labels = c("Ambient" = "High pH", "Low" = "Low pH")) +
-  geom_boxplot() +
-  labs(x = "Treatment", y = "pH (total scale)", fill = "Treatment") +
-  theme_classic() +
-  theme(text = element_text(family = "Times New Roman", size = 12),
-        axis.title = element_text(size = 12),
-        legend.position = "right") +
-   guides(fill = guide_legend(title = "pH Treatment"))  # Custom legend title
-
-# Annotate manually if t_test_result is significant
-if (t_test_result$p.value < 0.05) {
-  t_test_ph <- t_test_ph + annotate("text", x = 1.5, y = max(ph.data$pH), label = paste("p =", signif(t_test_result$p.value, 3)))
-}
-
-print(t_test_ph)
-```
-
 
 
 ```{r}
@@ -351,48 +303,52 @@ summary_data <- mesocosm.data %>%
   dplyr::summarize(
     # Calculate mean and standard deviation for Temp_C
     Mean_Temp_C = mean(Temp_C, na.rm = TRUE),
-    SD_Temp_C = sd(Temp_C, na.rm = TRUE) / sqrt(n()),
+    SD_Temp_C = sd(Temp_C, na.rm = TRUE),
+    SE_Temp_C = sd(Temp_C, na.rm = TRUE) / sqrt(n()),
+    N = n(),
     
     # Calculate mean and standard deviation for DO_mgL
     Mean_DO_mgL = mean(DO_mgL, na.rm = TRUE),
-    SD_DO_mgL = sd(DO_mgL, na.rm = TRUE) / sqrt(n()),
+    SD_DO_mgL = sd(DO_mgL, na.rm = TRUE),
+    SE_DO_mgL = sd(DO_mgL, na.rm = TRUE) / sqrt(n()),
+    N = n(),
         
     # Calculate mean and standard deviation for DO_Percent
     Mean_DO_Percent = mean(DO_Percent, na.rm = TRUE),
-    SD_DO_Percent = sd(DO_Percent, na.rm = TRUE) / sqrt(n()),
-    
+    SD_DO_Percent = sd(DO_Percent, na.rm = TRUE),
+    SE_DO_Percent = sd(DO_Percent, na.rm = TRUE) / sqrt(n()),
     # Calculate mean and standard deviation for Salinity
     Mean_Salinity = mean(Salinity, na.rm = TRUE),
-    SD_Salinity = sd(Salinity, na.rm = TRUE) / sqrt(n()),
-    
+    SD_Salinity = sd(Salinity, na.rm = TRUE),
+    SE_Salinity = sd(Salinity, na.rm = TRUE) / sqrt(n()),
     # Calculate mean and standard deviation for Conductivity
     Mean_Conductivity = mean(Conductivity, na.rm = TRUE),
-    SD_Conductivity = sd(Conductivity, na.rm = TRUE) / sqrt(n()),
-    
+    SD_Conductivity = sd(Conductivity, na.rm = TRUE),
+    SE_Conductivity = sd(Conductivity, na.rm = TRUE) / sqrt(n()),
     # Calculate mean and standard deviation for pH
     Mean_pH = mean_pH(pH, na.rm = TRUE),
-    SD_pH = sd(pH, na.rm = TRUE) / sqrt(n()),
-    
+    SD_pH = sd(pH, na.rm = TRUE),
+    SE_pH = sd(pH, na.rm = TRUE) / sqrt(n()),
     # Calculate mean and standard deviation for TA
     Mean_TA = mean(TA, na.rm = TRUE),
-    SD_TA = sd(TA, na.rm = TRUE) / sqrt(n()),
-    
+    SD_TA = sd(TA, na.rm = TRUE),
+    SE_TA = sd(TA, na.rm = TRUE) / sqrt(n()),
     # Calculate mean and standard deviation for pCO2
     Mean_pCO2 = mean(pCO2, na.rm = TRUE),
-    SD_pCO2 = sd(pCO2, na.rm = TRUE) / sqrt(n()),
-    
+    SD_pCO2 = sd(pCO2, na.rm = TRUE),
+    SE_pCO2 = sd(pCO2, na.rm = TRUE) / sqrt(n()),
     # Calculate mean and standard deviation for HCO3
     Mean_HCO3 = mean(HCO3, na.rm = TRUE),
-    SD_HCO3 = sd(HCO3, na.rm = TRUE) / sqrt(n()),
-    
+    SD_HCO3 = sd(HCO3, na.rm = TRUE),
+    SE_HCO3 = sd(HCO3, na.rm = TRUE) / sqrt(n()),
     # Calculate mean and standard deviation for CO3
     Mean_CO3 = mean(CO3, na.rm = TRUE),
-    SD_CO3 = sd(CO3, na.rm = TRUE) / sqrt(n()),
-    
+    SD_CO3 = sd(CO3, na.rm = TRUE),
+    SE_CO3 = sd(CO3, na.rm = TRUE) / sqrt(n()),
     # Calculate mean and standard deviation for DIC
     Mean_DIC = mean(DIC, na.rm = TRUE),
-    SD_DIC = sd(DIC, na.rm = TRUE) / sqrt(n())
-    
+    SD_DIC = sd(DIC, na.rm = TRUE),
+    SE_DIC = sd(DIC, na.rm = TRUE) / sqrt(n())
 ) 
 
 summary_table <- summary_data %>% 
@@ -401,7 +357,7 @@ summary_table <- summary_data %>%
     Mean_Temp_C = paste(round(Mean_Temp_C, 2), "±", round(SD_Temp_C, 2)),
     Mean_pH = paste(round(Mean_pH, 2), "±", round(SD_pH, 2)),
     Mean_Salinity = paste(round(Mean_Salinity, 2), "±", round(SD_Salinity, 2)),
-    Mean_DO_Percent = paste(round(Mean_DO_Percent, 2), "±", round(SD_DO_Percent, 2)),
+    Mean_DO_mgL = paste(round(Mean_DO_mgL, 2), "±", round(SD_DO_mgL, 2)),
     Mean_Conductivity = paste(round(Mean_Conductivity, 2), "±", round(SD_Conductivity, 2)),
     Mean_TA = paste(round(Mean_TA, 2), "±", round(SD_TA, 2)),
     Mean_pCO2 = paste(round(Mean_pCO2, 2), "±", round(SD_pCO2, 2)),
@@ -411,39 +367,71 @@ summary_table <- summary_data %>%
   ) 
 
 summary_table <- summary_table %>%
-  select(-SD_Temp_C, -SD_pH, -SD_Salinity, -SD_DO_Percent, -SD_DO_mgL, -SD_Conductivity, -SD_TA, -SD_pCO2, -SD_HCO3, -SD_CO3, -SD_DIC) %>%
+  dplyr::select(-SD_Temp_C, -SD_pH, -SD_Salinity, -SD_DO_Percent, -SD_DO_mgL, -SD_Conductivity, -SD_TA, -SD_pCO2, -SD_HCO3, -SD_CO3, -SD_DIC) %>%
+  dplyr::select(-Mean_DO_Percent, -Mean_Conductivity) %>%
   arrange(pH_Treatment, Temp_Treatment)
 
-# Rename columns to include units in labels
-summary_table <- rename(summary_table,
-  `Mean Temp (°C)` = Mean_Temp_C,
-  `Mean pH` = Mean_pH,
-  `Mean Salinity (ppt)` = Mean_Salinity,
-  `Mean DO Percent (%)` = Mean_DO_Percent,
-  `Mean DO (mg/L)` = Mean_DO_mgL,
-  `Mean Conductivity (µS/cm)` = Mean_Conductivity,
-  `Mean TA (µmol/kg)` = Mean_TA,
-  `Mean pCO2 (atm)` = Mean_pCO2,
-  `Mean DIC (µmol/kg)` = Mean_DIC,
-  `Mean HCO3 (µmol/kg)` = Mean_HCO3,
-  `Mean CO3 (µmol/kg)` = Mean_CO3
-)
 
 summary_table <- summary_table %>%
   mutate(
     pH_Treatment = factor(pH_Treatment, levels = c("Ambient", "Low", "Sump"))
   ) %>%
-  arrange(pH_Treatment, Temp_Treatment)
+  arrange(pH_Treatment, Temp_Treatment) %>% ungroup()
 
 
+  
+  # Assuming summary_table is already created and contains the formatted summary data
+gt_summary_table <- gt(summary_table) %>%
+  tab_header(
+    title = "Summary of Treatment Conditions",
+    subtitle = "Mean values with standard deviations for each temperature and pH treatment"
+  ) %>%
+  cols_label(
+    Temp_Treatment = "Temp Treatment",
+    pH_Treatment = "pH Treatment",
+    Mean_Temp_C = "Mean Temp (°C)",
+    Mean_pH = "Mean pH\u209C",
+    Mean_DO_mgL = "Mean DO (mg/L)",
+    Mean_Salinity = "Mean Salinity (ppt)",
+    Mean_TA = "Mean TA (µmol/kg)",
+    Mean_pCO2 = "Mean pCO\u2082 (µatm)",
+    Mean_HCO3 = "Mean HCO\u2083 (µmol/kg)",
+    Mean_CO3 = "Mean CO₃ (µmol/kg)",
+    Mean_DIC = "Mean DIC (µmol/kg)"
+) %>%
+  tab_options(
+    table.font.size = 12,
+    heading.title.font.size = 14,
+    heading.subtitle.font.size = 12,
+    table.font.color = "black"
+  ) %>%
+  tab_options(
+    table.font.size = 12,
+    heading.title.font.size = 16,
+    heading.subtitle.font.size = 14,
+    table.font.color = "black",
+    table.width = "100%"
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body(columns = everything())
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_column_labels(columns = everything())
+  ) %>%
+  tab_spanner(label = "Summary of Treatment Conditions", columns = everything())
+# Save the summary table as an image file
+gtsave(gt_summary_table, filename = here("Figures", "summary_table.png"))
+
+# Display the table in the R session for verification
+gt_summary_table
+  
 #save summary table in csv format
 write_csv(summary_data, here("Output", "mesocosm_summary_table.csv"))
 
 #read csv file
 read_csv(here("Output", "mesocosm_summary_table.csv")) 
-  
-  
-  
 ```
 
 
@@ -607,9 +595,9 @@ ggsave(here("Output/mesocosm_mean_pH_plot.png"), mesocosm_mean_pH_plot, width = 
 
 ```{r}
 
-pH_Temp_data <- summary_data %>%
+pH_Temp_data <- mesocosm.data %>%
   filter(pH_Treatment != "Sump") %>% 
-  select(pH_Treatment, Temp_Treatment, Mean_Temp_C, SD_Temp_C, Mean_pH, SD_pH) %>%
+  dplyr::select(pH_Treatment, Temp_Treatment, Mean_Temp_C, SE_Temp_C, Mean_pH, SD_pH) %>%
   na.omit()
 
 # Calculate the overall mean pH
@@ -648,24 +636,22 @@ hline_data <- data.frame(
 
 # Then map the colors to this new data within geom_hline()
 mesocosm_plot_temp_pub <- ggplot(pH_Temp_data, aes(x = Temp_Treatment_Offset, y = Mean_Temp_C)) +
-  geom_point(aes(color = as.numeric(Temp_Treatment)), size = 2) +
   geom_errorbar(
-    aes(ymin = Mean_Temp_C - SD_Temp_C, ymax = Mean_Temp_C + SD_Temp_C, color = as.numeric(Temp_Treatment)),
-    width = 0.1,
-    size = 0.75
+    aes(ymin = Mean_Temp_C - SE_Temp_C, ymax = Mean_Temp_C + SE_Temp_C, size = as.factor(pH_Treatment)),
+    width = 0.1
   ) +
-  scale_color_gradient(low = "#FFEC8B", high = "#CD3333", name = "Temp (°C)", limits = c(12, 26), breaks = seq(12, 26, by = 2)) +
+  geom_point(aes(color = as.numeric(Temp_Treatment)), size = 2) +
+  scale_color_gradient(low = "#ffffcc", high = "red3", name = "Temp (°C)", limits = c(12, 26), breaks = seq(12, 26, by = 2)) +
+  scale_size_manual(values = c(0.5, 1), name = "pH Treatment") +
   scale_x_continuous(breaks = seq(12, 26, by = 2), limits = c(11, 27)) +
   scale_y_continuous(breaks = seq(12, 26, by = 2), limits = c(11, 27)) +
-  geom_hline(data = hline_data, aes(yintercept = yintercept, color = as.numeric(Temp_Treatment)), linetype = "dashed") +
-  labs(x = "Temp Treatment", y = "Mean Temp (°C)", color = "Temp (°C)") +
-  theme_classic() +
+  labs(x = "Temp Treatment", y = "Mean Temp (°C)") +
+  common_theme +
   theme(
     text = element_text(family = "Times New Roman", size = 12),
     axis.title = element_text(size = 12),
-    legend.position = "right"
+    legend.position = "none"
   )
-
 
 # Create a plot with standard error bars for Mean_pH
 mesocosm_plot_pH_pub <- ggplot(pH_Temp_data, aes(x = factor(Temp_Treatment), y = Mean_pH, color = factor(pH_Treatment))) +
@@ -718,9 +704,9 @@ print(mesocosm_mean_pH_plot_pub)
 
 
 # Filter out rows where pH_Treatment is not equal to "Sump"
-temp_summary_data <- summary_data %>%
+temp_summary_data <- mesocosm.data%>%
   filter(pH_Treatment != "Sump") %>% 
-  select(Mean_Temp_C, Temp_Treatment, pH_Treatment)
+  dplyr::select(Mean_Temp_C, Temp_Treatment, pH_Treatment)
 
 temp_summary_data$Temp_Treatment <- as.factor(temp_summary_data$Temp_Treatment)
 temp_summary_data$pH_Treatment <- as.factor(temp_summary_data$pH_Treatment)
@@ -739,7 +725,7 @@ print(tukey_result)
 # Filter out rows where pH_Treatment is not equal to "Sump"
 pH_summary_data <- summary_data %>%
   filter(pH_Treatment != "Sump") %>% 
-  select(Mean_pH=Mean_pH, Temp_Treatment, pH_Treatment)
+  dplyr::select(Mean_pH=Mean_pH, Temp_Treatment, pH_Treatment)
 
 pH_summary_data$Temp_Treatment <- as.factor(pH_summary_data$Temp_Treatment)
 pH_summary_data$pH_Treatment <- as.factor(pH_summary_data$pH_Treatment)
@@ -770,7 +756,7 @@ TNK_2 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -782,7 +768,7 @@ TNK_3 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -794,7 +780,7 @@ TNK_4 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -806,7 +792,7 @@ TNK_5 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -818,7 +804,7 @@ TNK_6 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -830,7 +816,7 @@ TNK_7 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -842,7 +828,7 @@ TNK_8 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -854,7 +840,7 @@ TNK_9 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -866,7 +852,7 @@ TNK_10 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -878,7 +864,7 @@ TNK_11 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -890,7 +876,7 @@ TNK_12 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -902,7 +888,7 @@ TNK_13 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -914,7 +900,7 @@ TNK_14 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -926,7 +912,7 @@ TNK_15 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -938,7 +924,7 @@ TNK_16 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -950,7 +936,7 @@ TNK_18 <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -962,7 +948,7 @@ TNK_AIR <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -974,7 +960,7 @@ TNK_SMP <- read_csv(
   skip = 2,
   col_names = c("Datetime", "Temp_C", "Host Connect", "Button Down", "Button Up", "EOF")
 ) %>%
-  select(1:2)%>%
+  dplyr::select(1:2)%>%
   slice(-1) %>% 
   mutate(Datetime = ymd_hms(Datetime),
          Time = hms(format(Datetime, format = "%H:%M:%S")),
@@ -990,7 +976,7 @@ tank_timeseries <- bind_rows(TNK_2, TNK_3, TNK_4, TNK_5, TNK_6, TNK_7, TNK_8, TN
 
 filtered_timeseries <- tank_timeseries %>%
   group_by(Tank_ID) %>%
-  filter(Datetime >= "2022-08-23", #day experiment began - not counting acclimation period
+  filter(Datetime >= "2022-08-21", #day experiment began - not counting acclimation period
          Datetime <= "2022-09-01") %>% 
 mutate(
     Tide = case_when(
@@ -1004,6 +990,12 @@ mutate(
   na.omit() %>%
   left_join(mesocosm.metadata)
 
+
+
+```
+
+
+```{r}
 mesocosm.data <- read_csv(here::here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"))
 
 #spot check times and values
@@ -1012,7 +1004,7 @@ mesocosm.data<- mesocosm.data %>%
                       ymd_hms(paste0(Date, " 10:00:00"), tz = "UTC"), 
                       ymd_hms(paste0(Date, " 11:00:00"), tz = "UTC")),
     Datetime = as.POSIXct(Datetime)) %>%
-  select(Datetime, Tank_ID, Temp_C_Spot=Temp_C) %>%
+  dplyr::select(Datetime, Tank_ID, Temp_C_Spot=Temp_C) %>%
   na.omit()
 
 # join the time series and the spot check data 
@@ -1079,6 +1071,35 @@ logger.lowtide.temp.plot
 
 tank_timeseries_corrected <- logger.hightide.temp
 
+
+logger.hightide.temp.means <- logger.hightide.temp %>% 
+  filter(pH_Treatment != "Sump", pH_Treatment != "Air") %>% 
+  group_by(Temp_Treatment, pH_Treatment) %>%
+  dplyr::summarize(Mean_Temp_C = mean(Temp_C, na.rm = TRUE),
+                   SD_Temp_C = sd(Temp_C, na.rm = TRUE),
+                   SE_Temp_C = SD_Temp_C / sqrt(n()))
+
+# Then map the colors to this new data within geom_hline()
+mesocosm_plot_temp_pub <- ggplot(logger.hightide.temp.means, aes(x = Temp_Treatment, y = Mean_Temp_C, color=pH_Treatment)) +
+  # position dodge here
+  geom_point(size = 2) +
+  geom_errorbar(
+    aes(ymin = Mean_Temp_C - SD_Temp_C, ymax = Mean_Temp_C + SD_Temp_C),
+    width = 0.1,
+    size = 0.75
+  ) +
+  scale_color_manual(values = c("darkorange", "cyan3")) +
+  labs(x = "Temperature Treatment", y = "Mean Temp (°C)", color = "Temp (°C)") +
+  theme_classic() +
+  theme(
+    text = element_text(family = "Times New Roman", size = 12),
+    axis.title = element_text(size = 12),
+    legend.position = "right"
+  )
+```
+
+
+```{r}
 # 1. Calculate the mean for each combination of Tank_Treatment and pH_Treatment
 means <- tank_timeseries_corrected %>%
   filter(pH_Treatment != "Sump", pH_Treatment != "Air") %>% 
@@ -1110,11 +1131,11 @@ write_csv(means, here::here("Data", "Mesocosm_Data", "Mesocosm_Temp_Means.csv"))
 print(filtered_means)
 print(means)
  
-means <- means %>% 
-  mutate(Temp_Treatment= case_when(
-    pH_Treatment == "Low" ~ Temp_Treatment - 0.2,
-    pH_Treatment == "Ambient" ~ Temp_Treatment + 0.2
-  ))
+#means <- means %>% 
+  #mutate(Temp_Treatment= case_when(
+   # pH_Treatment == "Low" ~ Temp_Treatment - 0.2,
+   # pH_Treatment == "Ambient" ~ Temp_Treatment + 0.2
+  #))
 
 # First, create a data frame with the y-intercepts and corresponding colors
 hline_data <- data.frame(
@@ -1123,17 +1144,17 @@ hline_data <- data.frame(
 )
 
 # Then map the colors to this new data within geom_hline()
-mesocosm_plot_temp_pub <- ggplot(means, aes(x = Temp_Treatment, y = Mean_Temp_C)) +
-  geom_point(aes(color = as.numeric(Temp_Treatment)), size = 2) +
+mesocosm_plot_temp_pub <- ggplot(means, aes(x = Temp_Treatment, y = Mean_Temp_C, color=pH_Treatment)) +
+  geom_point(size = 2) +
   geom_errorbar(
     aes(ymin = Mean_Temp_C - SD_Temp_C, ymax = Mean_Temp_C + SD_Temp_C, color = as.numeric(Temp_Treatment)),
     width = 0.1,
     size = 0.75
   ) +
-  scale_color_gradient(low = "#FFEC8B", high = "#CD3333", name = "Temp (°C)", limits = c(10, 30), breaks = seq(10, 30, by = 4)) +
-  scale_x_continuous(breaks = seq(12, 26, by = 2), limits = c(10, 28)) +
-  scale_y_continuous(breaks = seq(12, 26, by = 2), limits = c(10, 29)) +
-  geom_hline(data = hline_data, aes(yintercept = yintercept, color = as.numeric(Temp_Treatment)), linetype = "dashed") +
+  scale_color_manual(values = c("darkorange", "cyan3")) +
+ # scale_x_continuous(breaks = seq(12, 26, by = 2), limits = c(10, 28)) +
+ # scale_y_continuous(breaks = seq(12, 26, by = 2), limits = c(10, 29)) +
+ # geom_hline(data = hline_data, aes(yintercept = yintercept, color = as.numeric(Temp_Treatment)), linetype = "dashed") +
   labs(x = "Temperature Treatment", y = "Mean Temp (°C)", color = "Temp (°C)") +
   theme_classic() +
   theme(
@@ -1151,7 +1172,7 @@ plot(mesocosm_plot_temp_pub)
 # Reading in mesocosm treatment metadata
 mesocosm.metadata <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_Metadata.csv"))
 
-# Selecting all files from the folders
+# dplyr::selecting all files from the folders
 files <- list.files(here("Data", "Mesocosm_Data", "Mesocosm_HOBO_Temperature"),
                     pattern = ".csv", full.names = TRUE) %>% 
   sort(decreasing = TRUE) # Files ordered by decreasing values
@@ -1166,7 +1187,7 @@ temp.data <- files %>%  # Read CSV files into one data frame
     Date = ymd_hms(Date), # Change to date format
     Time = hms(format(Date, format = "%H:%M:%S")) # Separate date and time columns 
   ) %>%  
-  select(Tank_ID, Date, Time, Temp) # Selecting columns
+  dplyr::select(Tank_ID, Date, Time, Temp) # dplyr::selecting columns
 
 #cleaning and filtering data
 temp.clean <- temp.data %>% 

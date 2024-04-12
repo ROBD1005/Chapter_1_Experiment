@@ -33,12 +33,11 @@ library(extrafont)
 # Study Site Map Oce Package 
 
 ```{r}
+
 # Define study site coordinates and labels
 center_lon <- -118.28599
 center_lat <- 33.70679092
-study_site <- data.frame(name = "Point Fermin Park Beach,\n       Los Angeles, CA",
-                         lon = center_lon,
-                         lat = center_lat)
+study_site <- data.frame(name = "Point Fermin Park Beach, Los Angeles, CA", lon = center_lon, lat = center_lat)
 
 # Define lonlim and latlim from bounding box coordinates
 lonlim <- c(-118.5, -118.1)
@@ -94,16 +93,172 @@ mapScalebar(x = "topright", col = "black", cex = 0.7)
 
 ```
 
-# Open Water SST and pH for a nearby site (Newport Beach Pier)
+```{r Creating Study Site Map, message=FALSE, warning=FALSE}
+# Define study site coordinates and labels
+center_lon <- -118.28599
+center_lat <- 33.70679092
 
-#Temperature Data from UCSD Shore Stations 1924-2023
+# Define regional area
+regional_lonlim <- c(-126, -114)
+regional_latlim <- c(28, 44)
+
+# Expand the limits by on each side
+studysite_lonlim <- c(floor(center_lon)+0.5, ceiling(center_lon))
+studysite_latlim <- c(floor(center_lat)+0.6, ceiling(center_lat))
+
+# Define bounding box coordinates for the west coast 
+bbox_region <- st_sfc(st_polygon(list(rbind(
+  c(regional_lonlim[1], regional_latlim[1]),
+  c(regional_lonlim[2], regional_latlim[1]),
+  c(regional_lonlim[2], regional_latlim[2]),
+  c(regional_lonlim[1], regional_latlim[2]),
+  c(regional_lonlim[1], regional_latlim[1])
+))), crs=st_crs(4326))
+
+# Define the bounding box as an sf object for the study site
+bbox_studysite <- st_sfc(st_polygon(list(rbind(
+  c(studysite_lonlim[1], studysite_latlim[1]),
+  c(studysite_lonlim[2], studysite_latlim[1]),
+  c(studysite_lonlim[2], studysite_latlim[2]),
+  c(studysite_lonlim[1], studysite_latlim[2]),
+  c(studysite_lonlim[1], studysite_latlim[1])
+))), crs=st_crs(4326))
+
+regional_polygon <- bbox_region %>% st_as_sf(crs=st_crs(4326))
+studysite_polygon <- bbox_studysite %>% st_as_sf(crs=st_crs(4326))
+
+# Prepare the high-resolution country data
+regional_data_polygon <- ne_countries(scale = 10, continent = c('North America', 'South America'), returnclass = "sf") %>% 
+  st_transform(crs = st_crs(regional_polygon)) %>% 
+  #st_crop(regional_polygon) %>%
+  st_intersection(regional_polygon) %>%
+  st_simplify(dTolerance = 0.01) %>% 
+  st_cast("MULTIPOLYGON") %>% 
+  st_union() 
+
+# get high resolution coastal data for the region shapes
+regional_coastline_data <- ne_coastline(scale = 10, returnclass = "sf") %>%
+  st_transform(crs = st_crs(regional_polygon)) %>%
+  st_intersection(regional_polygon)
+
+
+#get high resolution data for study site
+studysite_coastline_data <- st_as_sf(getData('GADM', country='USA', level=0), crs=st_crs(4326)) %>%
+  st_intersection(studysite_polygon)
+studysite_coastline_boundary <- st_boundary(studysite_coastline_data)
+
+#get high resolution lakes data for the region shapes
+regional_lakes_data <- ne_download(scale = 10, type = "lakes_north_america", category = "physical", returnclass = "sf") %>% 
+  st_transform(crs = st_crs(regional_polygon)) 
+regional_lakes_data <- regional_lakes_data[st_is_valid(regional_lakes_data), ] %>%
+  st_intersection(regional_polygon)
+study_site_lakes_data <- regional_lakes_data %>% 
+  st_transform(crs = st_crs(studysite_polygon))  %>% 
+  st_intersection(studysite_polygon)
+
+#getting river data for the regions
+regional_rivers_data <- ne_download(scale = 10, type = "rivers_lake_centerlines", category = "physical", returnclass = "sf") %>% 
+  st_transform(crs = st_crs(regional_polygon)) %>% 
+  st_crop(regional_polygon) %>%
+  st_intersection(regional_polygon)
+studysite_rivers_data <-regional_rivers_data %>% 
+  st_transform(crs = st_crs(studysite_polygon)) %>% 
+  st_intersection(studysite_polygon) 
+
+study_site <- data.frame(
+  name = "Point Fermin State Marine Beach, Los Angeles, CA",
+  lon = center_lon,
+  lat = center_lat
+)
+
+# Now let's fix the plotting code
+regional_map <- ggplot(clip="on") +
+  geom_sf(data = regional_polygon, fill = "cyan3", clip="on") +
+  geom_sf(data = regional_data_polygon, fill = "darkolivegreen3", color = "#6B8E23", linewidth = 0.01, clip="on") +
+  geom_sf(data = regional_rivers_data, fill = "#6B8E23", color = "#6B8E23", size = 0.4, linewidth=1, alpha=0.3, clip="on") +
+  geom_sf(data = regional_lakes_data, color="#6B8E23", linewidth = 0.5,  size = 0.4, alpha=0.3, clip="on") +
+  geom_sf(data = regional_rivers_data, fill ="cyan3", color = "cyan3", size = 0.5, alpha = 0.9, clip="on") +
+  geom_sf(data = regional_lakes_data,  fill = "cyan3", color = "cyan3", size=0.5, alpha = 0.9, clip="on") +
+  geom_sf(data = regional_data_polygon, fill = NA, color = "#6B8E23", linewidth = 0.05, alpha = 0.1, clip="on") +
+  geom_sf(data = regional_rivers_data, color = "darkolivegreen", linewidth = 3, alpha = 0.075, clip="on") +
+  geom_sf(data = regional_lakes_data, color = "darkolivegreen", linewidth = 0.01, alpha = 0.01, clip="on") +
+  geom_sf(data = regional_coastline_data, fill=NA, color = "darkolivegreen", linewidth = 2, alpha = 0.05, clip="on") +
+  geom_sf(data = regional_coastline_data, fill=NA, color = "darkolivegreen", linewidth = 5, alpha = 0.05, clip="on") +
+  geom_sf(data = regional_coastline_data, color = "darkolivegreen3", size=0.9, linewidth = 3, alpha = 0.05, clip="on") +
+  geom_sf(data = regional_coastline_data, color = "white", size=0.8, linewidth = 1.5, alpha = 0.05, clip="on") +
+  geom_sf(data = regional_coastline_data,  fill=NA, color = "grey20", size=1.1, linewidth = 0.05, alpha = 0.15, clip="on") +
+  #geom_rect(data = data.frame(), aes(xmin = studysite_lonlim[1]-0.05, xmax = studysite_lonlim[2]+0.05,
+                                     #ymin = studysite_latlim[1]-0.05, ymax = studysite_latlim[2]+0.05),
+                                     #colour = "grey20", size=0.4, fill = NA, clip="on") +
+  geom_rect(data = data.frame(), aes(xmin = regional_lonlim[1], xmax = regional_lonlim[2],
+  ymin = regional_latlim[1], ymax = regional_latlim[2]), fill = NA, colour = "grey20", size=1, linewidthe=0.2, clip="on") +
+  coord_fixed(xlim = c(regional_lonlim[1], regional_lonlim[2]), ylim = c(regional_latlim[1], regional_latlim[2]), clip="on") +
+  coord_sf(xlim = c(regional_lonlim[1], regional_lonlim[2]), ylim = c(regional_latlim[1], regional_latlim[2]), 
+  expand = FALSE, crs=st_crs(4326), clip="on") +
+  scale_x_continuous(breaks = seq(st_bbox(bbox_region)["xmin"], st_bbox(bbox_region)["xmax"], by = 2)) +
+  scale_y_continuous(breaks = seq(st_bbox(bbox_region)["ymin"], st_bbox(bbox_region)["ymax"], by = 2)) +
+  theme_void() +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank()) #+
+  # spatial-aware automagic north arrow
+  #annotation_north_arrow(location = "tr", pad_y = unit(0.35, "cm"), pad_x = unit(0.3, "cm"),
+                        # width=unit(0.6, "cm"), height = unit(0.8, "cm"), which_north = "grid",
+                         # style = north_arrow_fancy_orienteering(text_size=8, text_col="grey20", fill=c("grey20", NA)))
+
+
+studysite_map <- ggplot() +
+  geom_sf(data = studysite_polygon, fill = "cyan3") +
+  geom_sf(data = studysite_coastline_data, fill = "darkolivegreen3", color = "#6B8E23", linewidth = 0.01, clip="on") +
+  geom_sf(data = studysite_rivers_data, fill = "#6B8E23", color = "#6B8E23", size = 0.4, linewidth=1, alpha=0.3) +
+  geom_sf(data = study_site_lakes_data, color="#6B8E23", linewidth = 0.5, size = 0.4, alpha=0.3, clip="on") +
+  geom_sf(data = studysite_rivers_data, fill = "cyan3", color = "cyan3", size = 0.5, clip="on", alpha = 0.9) +
+  geom_sf(data = study_site_lakes_data,  fill = "cyan3", color = "cyan3", size=0.5, clip="on", alpha = 0.9) +
+  geom_sf(data = studysite_coastline_boundary, fill = NA, color = "#6B8E23", linewidth = 0.15, alpha = 0.3, clip="on") +
+  geom_sf(data = studysite_rivers_data, color = "darkolivegreen", linewidth = 0.2, alpha = 0.2) +
+  geom_sf(data = study_site_lakes_data, color = "darkolivegreen", linewidth = 0.2, alpha = 0.2) +
+  geom_sf(data = studysite_coastline_boundary, fill=NA, color = "darkolivegreen", linewidth = 2, alpha = 0.05) +
+  geom_sf(data = studysite_coastline_boundary, fill=NA, color = "darkolivegreen", linewidth = 6, alpha = 0.05) +
+  geom_sf(data = studysite_coastline_boundary, color = "darkolivegreen3", size=0.9, linewidth = 4, alpha = 0.05, clip="on") +
+  geom_sf(data = studysite_coastline_boundary, color = "white", size=0.8, linewidth = 1.5, alpha = 0.05, clip="on") +
+  geom_sf(data = studysite_coastline_boundary, fill=NA, color = "grey20", size=1.1, linewidth = 0.3, alpha = 0.3) +
+  coord_fixed(xlim = c(studysite_lonlim[1], studysite_lonlim[2]), ylim = c(studysite_latlim[1], studysite_latlim[2]), clip="on") +
+  coord_sf(xlim = c(studysite_lonlim[1], studysite_lonlim[2]),
+           ylim = c(studysite_latlim[1], studysite_latlim[2]), expand = FALSE, crs=st_crs(4326)) +
+  scale_x_continuous(breaks = seq(st_bbox(bbox_studysite)["xmin"], st_bbox(bbox_studysite)["xmax"], by = 0.1)) +
+  scale_y_continuous(breaks = seq(st_bbox(bbox_studysite)["ymin"], st_bbox(bbox_studysite)["ymax"], by = 0.1)) +
+  theme_void() +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(fill = NA, color = "grey20", size = 1),
+        plot.margin = margin(l = 80, b = 80)) #+  # spatial-aware automagic scale bar
+  #annotation_scale(location = "br", style="ticks", height = unit(0.15, "cm"), pad_x = unit(0.4, "cm")) 
+
+ggdraw() +
+  draw_plot(studysite_map) +
+  draw_plot(regional_map,
+    height = 0.35,
+    width=0.2,
+    x = 0.64,
+    y = 0.63) 
+
+#### ADJUST RIVERS WITH SIZE
+```
+
+
+## Open Water SST and pH for a nearby site (Newport Beach Pier)
+
+### Temperature & pH Data from UCSD Shore Stations 1924-2023
  
 Carter, Melissa L.; Flick, Reinhard E.; Terrill, Eric; Beckhaus, Elena C.; Martin, Kayla; Fey, Connie L.; Walker, Patricia W.; Largier, John L.; McGowan, John A. (2022). Shore Stations Program, Newport Beach - Balboa Pier. In Shore Stations Program Data Archive: Current and Historical Coastal Ocean Temperature and Salinity Measurements from California Stations. UC San Diego Library Digital Collections. https://doi.org/10.6075/J0GX4BCP
 
-Temperature data provided by the Shore Stations Program sponsored at Scripps Institution of Oceanography by California Department of Parks and Recreation, Natural Resources Division,  Award# C1670003, and pH data provided by the Southern California Coastal Ocean Observing System.
+Temperature and pH data provided by the Shore Stations Program sponsored at Scripps Institution of Oceanography by California Department of Parks and Recreation, Natural Resources Division,  Award# C1670003, and pH data provided by the Southern California Coastal Ocean Observing System.
 
-pH Data 
-# Temperature Histogram 
+## Temperature Histogram 
 
 ```{r}
 # Read the CSV file
@@ -138,17 +293,17 @@ print(paste("Experimental mean temperature:", round(experimental_mean_temp, 2), 
 
 #Histogram of Daily Mean Temperature
 histogram_temp <- ggplot(experimental_daily_temp_stats, aes(x=Mean_Temp)) +
-  geom_vline(aes(xintercept=12), color="#FFA726", size=1) +
-  geom_vline(aes(xintercept=14), color="#FFA726", size=1) +
-  geom_vline(aes(xintercept=16), color="#FFA726", size=1) +
-  geom_vline(aes(xintercept=18), color="#FFA726", size=1) +
-  geom_vline(aes(xintercept=20), color="#FFA726", size=1) +
-  geom_vline(aes(xintercept=22), color="#FFA726", size=1) +
-  geom_vline(aes(xintercept=24), color="#FFA726", size=1) +
-  geom_vline(aes(xintercept=26), color="#FFA726", size=1) +
-  geom_histogram(binwidth = 0.5, fill = "#FFE0B2", color = "darkslategrey", alpha=0.5) +
+  geom_vline(aes(xintercept=12), color="#F57C00", size=1) +
+  geom_vline(aes(xintercept=14), color="#F57C00", size=1) +
+  geom_vline(aes(xintercept=16), color="#F57C00", size=1) +
+  geom_vline(aes(xintercept=18), color="#F57C00", size=1) +
+  geom_vline(aes(xintercept=20), color="#F57C00", size=1) +
+  geom_vline(aes(xintercept=22), color="#F57C00", size=1) +
+  geom_vline(aes(xintercept=24), color="#F57C00", size=1) +
+  geom_vline(aes(xintercept=26), color="#F57C00", size=1) +
+  geom_histogram(binwidth = 0.5, fill = "orange", color = "darkslategrey", alpha=0.5) +
   geom_vline(aes(xintercept=overall_mean_temp), color="#F57C00", linetype="dashed", size=1) +
-  geom_vline(aes(xintercept=experimental_mean_temp), color="#F57C00", linetype="dotted", size=1) +
+  geom_vline(aes(xintercept=experimental_mean_temp), color="orangered", linetype="dotted", size=1) +
   scale_x_continuous(breaks = seq(12, 26, by = 2)) +
   labs(x = "Mean Sea Surface Temperature (°C)",
        y = "Frequency",
@@ -161,13 +316,13 @@ histogram_temp <- ggplot(experimental_daily_temp_stats, aes(x=Mean_Temp)) +
 # Output the histogram
 print(histogram_temp)
 ```
-
+## pH Histogram
 
 ```{r}
 # Read and preprocess data
-newportbeach.pH <- read_csv(here("Data", "Site_Data", "Newport_pH_2005-2024.csv"))[-1,]
+newportbeach.pH.hourly <- read_csv(here("Data", "Site_Data", "Newport_pH_2005-2024.csv"))[-1,]
 
-filtered.newportbeach.pH <- newportbeach.pH %>%
+filtered.newportbeach.pH.hourly <- newportbeach.pH.hourly %>%
   mutate(pH = sea_water_ph_reported_on_total_scale_salinity_corrected,
          time = as.POSIXct(time, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"), Date=as.Date(time)) %>%
   filter(sea_water_ph_reported_on_total_scale_salinity_corrected_qc_agg %in% 1,
@@ -175,7 +330,7 @@ filtered.newportbeach.pH <- newportbeach.pH %>%
   select(Date, time, pH)
 
 #Daily Mean pH
-experimental_daily_pH_stats <- filtered.newportbeach.pH %>%
+newportbeach.pH.hourly.daily.stats <- filtered.newportbeach.pH.hourly %>%
   group_by(Date) %>%
   summarise(Mean_pH = mean(pH, na.rm = TRUE)) 
 
@@ -296,23 +451,24 @@ temperature_timeseries <- ggplot(monthly_temp_stats, aes(x = as.Date(YM), y = Me
 print(temperature_timeseries)
 ```
 
+
+
+
 ```{r}
 # Read and preprocess data
-newportbeach.pH <- read_csv(here("Data", "Site_Data", "Newport_pH_2005-2024.csv"))[-1,]
+newportbeach.pH.hourly <- read_csv(here("Data", "Site_Data", "Newport_pH_2005-2024.csv"))
 
-filtered.newportbeach.pH <- newportbeach.pH %>%
+filtered.newportbeach.pH.hourly <- newportbeach.pH.hourly %>%
   mutate(pH = sea_water_ph_reported_on_total_scale_salinity_corrected,
          time = as.POSIXct(time, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"), date=as.Date(time)) %>%
   filter(sea_water_ph_reported_on_total_scale_salinity_corrected_qc_agg %in% 1) %>% 
-  select(date, time, pH)
-
-filtered.newportbeach.pH <- filtered.newportbeach.pH %>%
+  dplyr::select(date, time, pH) %>%
   arrange(time) %>% 
   mutate(gap = c(0, diff(time) > hours(6)),  # Create a logical vector where TRUE indicates a gap
          group = cumsum(gap))
 
 # Calculate 3-hour mean and confidence intervals
-six_hour_ph_stats <- filtered.newportbeach.pH %>%
+six_hour_ph_stats <- filtered.newportbeach.pH.hourly %>%
   mutate(SixHourInterval = floor_date(time, "6 hours")) %>%
   group_by(group, SixHourInterval) %>%
   summarise(

@@ -8,11 +8,13 @@ date: "2023-09-15"
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-
+#remotes::install_github("ropensci/NLMR")
+rm(list=ls())
 library(here)
 library(tidyverse)
 library(LoLinR)
 library(rTPC)
+library(nlme)   
 library(nls.multstart)
 library(minpack.lm)
 library(boot)
@@ -31,477 +33,357 @@ library(respR)
 library(respirometry)
 library(NISTunits)
 library(measurements)
+library(tidyverse)
+library(car)
+library(tidyverse)
+library(multcomp)
+library(ggimage) 
+library(AICcmodavg)
+library(multiplestressR)
+library(dplyr)
 ```
 
 # Loading Data
 
 ```{r}
-#Reading in organism morphometric data 
-snail.data <- read_csv(here::here("Data", "Snail_Metadata", "Tegula_funebralis_Morphometric_Data.csv"), show_col_types = FALSE) %>%
-  select(Snail_ID:Experiment_End_Date)
 
-#Reading in ash free dry weight data
-snail.afdw.data <- read_csv(here::here("Data", "Snail_Metadata","Tegula_funebralis_AFDW.csv"), show_col_types = FALSE)%>% 
-  select(Snail_ID, Dry_Weight_g, Ash_Content_g, Ash_Free_Dry_Weight)
+# Reading in experimental treatment metadata and tank treatment data for the mesocosm experiment 
+experiment.metadata <- read_csv(here::here("Data", "Experiment_Metadata","Experiment_Treatment_Metadata.csv"), show_col_types = FALSE) %>%
+  left_join(read_csv(here::here("Data", "Mesocosm_Data", "mesocosm_summary_table.csv"), show_col_types = FALSE), by = join_by(Temp_Treatment, pH_Treatment))  %>%
+  left_join(read_csv(here::here("Data", "Experiment_Metadata", "Respirometry_Metadata.csv"), show_col_types = FALSE), by = join_by(Snail_ID)) 
 
-#Reading in respirometry metadata
-respo.metadata <- read_csv(here::here("Data", "Snail_Metadata","Respirometry_Metadata.csv"), show_col_types = FALSE)
-
-#Reading in experimental treatment metadata 
-experiment.metadata <- read_csv(here::here("Data", "Snail_Metadata","Experiment_Treatment_Metadata.csv"), show_col_types = FALSE)
-
-#Reading in experimental treatment metadata 
-experiment.metadata <- read_csv(here::here("Data", "Snail_Metadata","Experiment_Treatment_Metadata.csv"), show_col_types = FALSE)
-
-#joining experimental treatment and snail data 
-experiment.data <- left_join(experiment.metadata, snail.data, by = join_by(Snail_ID))
-
-#joining data and ash free dry weight 
-experiment.data <- left_join(experiment.data, snail.afdw.data, by = join_by(Snail_ID)) 
-
-#joining data and respiration metadata 
-experiment.data <- left_join(experiment.data, respo.metadata, by = join_by(Snail_ID))
-
-#loading tegula icon in
-image=here::here("Images", "Tegula_funebralis_icon.png")
-
-# Reading in Long Term Means 
-long.term.filtered.means <- read_csv(here::here("Data", "Mesocosm_Data", "Mesocosm_Temp_Filtered_Means.csv"), show_col_types = FALSE)
-long.term.means <- read_csv(here::here("Data", "Mesocosm_Data", "Mesocosm_Temp_Means.csv"), show_col_types = FALSE)
-
-#filtering out irresponsible snails & snails not run in respirometry
-#experiment.data <- experiment.data %>% 
-  #filter(Snail_ID != 36,
-         #Snail_ID != 43,
-         #Snail_ID != 72,
-         #Snail_ID != 61,
-         #Snail_ID != 67,
-         #Snail_ID != 52
-         #) # mortality (not responsive to forceps)
-```
-
-
-```{r}
-# Ash Free Dry Weight Calculation and Comparison to Paine 1971
-#AFDW = DW * (1 - (Ash/100))
-#Percent Ash = (Ash Free Dry Weight / Initial Blotted Wet Mass) * 100
-#Percent Ash Reported by Paine 1971 ~9.02%
-
-snail.afdw.data <- snail.afdw.data %>% 
-  mutate(Ash_Free_Dry_Weight=(Dry_Weight_g*(1-(Ash_Content_g/100)))) #overwritten as CSV
+# Reading in organism morphometric data and calculating ash free dry weight
+snail.data <- read_csv(here::here("Data", "Snail_Data", "Tegula_funebralis_Morphometric_Data.csv"), show_col_types = FALSE) %>% 
+  left_join(read_csv(here::here("Data", "Snail_Data", "Tegula_funebralis_AFDW.csv"), show_col_types = FALSE), by = join_by(Snail_ID))
   
-snail.data <- left_join(snail.data, snail.afdw.data, by = join_by(Snail_ID))
+# Joining experimental treatment and snail data
+experiment.data <- left_join(experiment.metadata, snail.data, by = join_by(Snail_ID))  
 
-snail.data <- snail.data %>% 
-  mutate(Percent_Ash=((Ash_Free_Dry_Weight/Initial_Blotted_Wet_Mass_g)*100),
-         Percent_Ash_Paine_1971= 9.02,
-         Expected_Ash_Free_Dry_Weight=Initial_Blotted_Wet_Mass_g*(Percent_Ash_Paine_1971/100)) %>%
-  select(Snail_ID, Initial_Blotted_Wet_Mass_g, Final_Blotted_Wet_Mass_g, Ash_Free_Dry_Weight, Percent_Ash,
-         Expected_Ash_Free_Dry_Weight) %>% 
-  na.omit()
+# Reading in respirometry data
+respo.dataset <- read_csv(here::here("Data", "Thinned_Respirometry_Data", "Respiration.Rates.Dataset.csv"), show_col_types = FALSE)
 
-# AFDW Comparison
-mean.afdw <- snail.data %>% 
-  dplyr::summarize(Mean_AFDW = mean(Ash_Free_Dry_Weight, na.rm = TRUE),
-         Mean_Expected_AFDW = mean(as.numeric(Expected_Ash_Free_Dry_Weight), na.rm = TRUE))
-
-# Exploring Snail Measurement Metrics 
-
-#running linear regression for snail measurements (Initial_Blotted_Wet_Mass_g versus Ash_Free_Dry_Weight)
-lm.snail.data <- lm(Initial_Blotted_Wet_Mass_g ~ Ash_Free_Dry_Weight, data = snail.data)
-
-plot(lm.snail.data)
-summary(lm.snail.data)
-
-# Extracting R-squared value
-rsquared <- summary(lm.snail.data)$r.squared
-
-# Plotting the data points
-plot(snail.data$Ash_Free_Dry_Weight, snail.data$Initial_Blotted_Wet_Mass_g, 
-     xlab = "Ash Free Dry Weight", ylab = "Initial Blotted Wet Mass (g)",
-     main = "Linear Regression of Snail Measurements (Initial Blotted Wet Mass vs. Ash Free Dry Weight)")
-
-# Adding the regression line
-abline(lm.snail.data, col = "blue")
-
-# Adding text for R-squared value
-text(x = min(snail.data$Ash_Free_Dry_Weight), y = max(snail.data$Initial_Blotted_Wet_Mass_g), 
-     labels = paste("R^2 =", round(rsquared, 3)), pos = 2)
-
-# Adding legend for regression line
-legend("topleft", legend = paste("Regression Line (R^2 =", round(rsquared, 3), ")", sep = ""), col = "blue", lty = 1)
-
-snail.measurement.data <- experiment.data %>% 
-  filter(Identity == 'Treatment')
-  
-shell.width.range <- range(snail.measurement.data$Shell_Width_mm)
-
-# Calculate the mean Shell_Width_mm
-mean_width <- mean(snail.measurement.data$Shell_Width_mm, na.rm = TRUE)
-
-# Calculate the standard deviation
-sd_width <- sd(snail.measurement.data$Shell_Width_mm, na.rm = TRUE)
-
-cat("Shell Width Range:", shell.width.range, "\n")
-cat("Mean Shell Width:", mean_width, "\n")
-cat("Standard Deviation:", sd_width, "\n")
-
-  
-shell.height.range <- range(snail.measurement.data$Shell_Height_mm)
-
-# Calculate the mean Shell_Width_mm
-mean_height <- mean(snail.measurement.data$Shell_Height_mm, na.rm = TRUE)
-
-# Calculate the standard deviation
-sd_height <- sd(snail.measurement.data$Shell_Height_mm, na.rm = TRUE)
-
-cat("Shell Height Range:", shell.height.range, "\n")
-cat("Mean Shell Height:", mean_height, "\n")
-cat("Standard Deviation:", sd_height, "\n")
-
-
-snail.initial.mass.range <- range(snail.measurement.data$Initial_Blotted_Wet_Mass_g)
-
-# Calculate the mean Shell_Width_mm
-mean_initial_mass <- mean(snail.measurement.data$Initial_Blotted_Wet_Mass_g, na.rm = TRUE)
-
-# Calculate the standard deviation
-sd_initial_mass <- sd(snail.measurement.data$Initial_Blotted_Wet_Mass_g, na.rm = TRUE)
-
-cat("Snail Initial Mass Range:", snail.initial.mass.range, "\n")
-cat("Mean Snail Initial Mass:", mean_initial_mass, "\n")
-cat("Standard Deviation:", sd_initial_mass, "\n")
-
-snail.final.mass.range <- range(snail.measurement.data$Final_Blotted_Wet_Mass_g)
-
-# Calculate the mean Shell_Width_mm
-mean_final_mass <- mean(snail.measurement.data$Final_Blotted_Wet_Mass_g, na.rm = TRUE)
-
-# Calculate the standard deviation
-sd_final_mass <- sd(snail.measurement.data$Final_Blotted_Wet_Mass_g, na.rm = TRUE)
-
-cat("Snail Final Mass Range:", snail.final.mass.range, "\n")
-cat("Mean Snail Final Mass:", mean_final_mass, "\n")
-cat("Standard Deviation:", sd_final_mass, "\n")
-
-
-snail.volume.range <- range(snail.measurement.data$Organism_Volume_mL)
-
-# Calculate the mean Shell_Width_mm
-mean_volume <- mean(snail.measurement.data$Organism_Volume_mL, na.rm = TRUE)
-
-# Calculate the standard deviation
-sd_volume <- sd(snail.measurement.data$Organism_Volume_mL, na.rm = TRUE)
-
-cat("Snail Volume Range:", snail.volume.range, "\n")
-cat("Mean Snail Volume:", mean_volume, "\n")
-cat("Standard Deviation:", sd_volume, "\n")
-
-snail.afdw.range <- range(snail.measurement.data$Ash_Free_Dry_Weight)
-mean_afdw <- mean(snail.measurement.data$Ash_Free_Dry_Weight, na.rm = TRUE)
-sd_afdw <- sd(snail.measurement.data$Ash_Free_Dry_Weight, na.rm = TRUE)
-
-cat("Snail AFDW Range:", snail.afdw.range, "\n")
-cat("Mean Snail AFDW:", mean_afdw, "\n")
-cat("Standard Deviation:", sd_afdw, "\n")
 
 ```
 
 
 
-```{r}
+# To do: MultiplestressR package for effect size calculations 
 
-# Reading and Merging Data 
-respirometry.data.summarized <- read_csv(here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv"), show_col_types = FALSE)
-carbonate.treatment.info <- read_csv(here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"), show_col_types = FALSE)
-temperature.treatment.info <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_Temp_Means.csv"), show_col_types = FALSE)
 
-# Mesocosm Biogeochemistry Data
-#calculates mean_pH based on H^+ pH values, first converted to [H+] then averaged and converted back to a mean pH value 
-carbonate.treatment.info <- carbonate.treatment.info %>%
-  select(Tank_ID, Temp_Treatment, pH_Treatment, pH) %>% 
-  group_by(Temp_Treatment, pH_Treatment) %>%
-  summarize(mean_pH=respirometry::mean_pH(pH, na.rm = FALSE))
+```{r Cleaning and Visualizing Respo Data for rTPC Model Selection}
 
-treatment.info <- left_join(carbonate.treatment.info, temperature.treatment.info, by = join_by(Temp_Treatment, pH_Treatment)) %>% 
-  select(Temp_Treatment, pH_Treatment, mean_pH, Mean_Temp_C)
+# Reading in respirometry data
+respo.rates.dataset <- read_csv(here::here("Data", "Thinned_Respirometry_Data", "Converted.Respiration.Rates.Dataset.csv"), show_col_types = FALSE) %>% 
+  mutate(Snail_ID = as.factor(Snail_ID),
+         uLO2_g_hr_wet = as.numeric(uLO2_g_hr_wet),
+         umolO2_g_hr = as.numeric(umolO2_g_hr)) %>% 
+  filter(!is.na(uLO2_g_hr & uLO2_g_hr_wet)) %>% 
+  dplyr::select(Snail_ID, Temp_Treatment, pH_Treatment, Temp.C, Salinity, Pressure, umolO2_g_hr, uLO2_g_hr_wet)
 
-#Joining respiration data with the data 
-joined.respo.dataset <- left_join(experiment.data, respirometry.data.summarized, by = join_by(File_ID)) %>% 
-  filter(pH_Treatment != "Sump") %>% 
-  select(Snail_ID, Temp_Treatment, pH_Treatment, Intercept, umolO2.L.sec, Temp.C, Salinity, Pressure, Organism_Volume_mL,
-         Ash_Free_Dry_Weight, Initial_Blotted_Wet_Mass_g, Tank_ID, Identity, File_ID)
+respo.rates.dataset <- respo.rates.dataset$data  %>% 
+  left_join(experiment.data)
 
-#Joining treament data with the respiration data
-treatment.respo.dataset <- left_join(joined.respo.dataset, treatment.info, by = join_by(Temp_Treatment, pH_Treatment))
-
-#Removing snails that faced mortality during the experiment
-filtered.respo.dataset <- treatment.respo.dataset %>% 
-  filter(Snail_ID != 43 & 36 & 72 & 52) %>% 
-  na.omit()
-
-#calculating chamber water volume by subtracting organism volume from chamber volume
-respo.dataset <- filtered.respo.dataset %>%    
-  # correcting for oxygen concentration at the start of the observation period (time zero) within the sealed chamber
-  mutate(Volume_mL = 650-Organism_Volume_mL, #Volume of water in chamber = full chamber volume (650 mL) of water minus organism volume
-         Volume_L = conv_multiunit(Volume_mL, "mL", "L"), #converting from mL to L (/1000)
-         #Subtracting Initial Oxygen Content in the Chamber from Seawater (to correct for bubbles - not necessary)
-         #mLO2.L = conv_o2(Intercept, from="umol_per_l", to="ml_per_l", temp=Temp.C, sal=Salinity, atm_pres=Pressure), #calculating the volume of oxygen in the chamber
-         #Oxygen_Volume = Volume_L - mLO2.L, #subtracting initial oxygen content in the chamber
-         #Volume_L = correct_bubble(resp_vol=Volume_L, bubble_vol=mLO2.L, temp = Temp.C, sal = Salinity, atm_pres = Pressure), #correcting the volume of water in the chamber minus the volume of oxygen
-         umolO2.sec = umolO2.L.sec*Volume_L) #standardizing to umolO2/sec
-
-# Filtering control respiration rates
-respo.control.data <- respo.dataset %>%
-  filter(Identity=="Control")
-
-# Checking to see if there are differences in respiration between pH treatments and temp tratments (temp significant)
-#aov_result <- aov(umolO2.sec ~ Temp_Treatment * pH_Treatment, data = respo.control.data)
-#summary(aov_result)
-
-respo.control.data <- respo.control.data %>% 
-  group_by(Temp_Treatment, pH_Treatment, Identity) %>% #grouping by treatments and control identity
-  mutate(umolO2.sec = mean(umolO2.sec, na.rm=TRUE)) %>% #means for blank seawater respiration 
-  select(blank.rate = umolO2.sec) #selecting for only blank rates
-
-#calorific coefficients used to convert 
-#Substrate	J/mg O2	  J/ml O2	  J/mmol O2	     Ref
-#Carbs   	14.77	      21.06 	  481.86	       Ivlev 1935; Elliot & Davison 1975; Gnaiger 1983 
-#Lipid	  13.73	      19.58	    447.93	       Ivlev 1935; Elliot & Davison 1975; Gnaiger 1983
-#Protein	13.61	      19.41	    444.01	       Ivlev 1935; Elliot & Davison 1975; Gnaiger 1983
-#Average	14.10	      20.11	    460.00         Ivlev 1935; Elliot & Davison 1975; Gnaiger 1983
-
-#joining summarized control respiration data to full respiration dataset 
-respo.dataset <- left_join(respo.dataset, respo.control.data)
-
-# Conversions and normalizations for rates 
-respo.rates.dataset <- respo.dataset %>% 
-  mutate(
-    
-    # calculating uncorrected and corrected respiration rates
-    #umolO2.sec.uncorrected = -(umolO2.sec),
-    umolO2.sec = -(umolO2.sec - blank.rate), # subtract the blank rates from the raw rates
-
-    # converting from umolO2/sec to umolO2/hour
-    #umolO2.hr.uncorrected = (umolO2.sec.uncorrected, from="umol_O2 / sec", to="umol_O2 / hr"),
-    umolO2.hr=conv_resp_unit(umolO2.sec, from="umol_O2 / sec", to="umol_O2 / hr"),
-
-    # converting from umolO2/hr to mLO2/hr
-    mL_O2.hr = conv_resp_unit(umolO2.hr, from="umol_O2 / hr", to="ml_O2 / hr"),
-    uL_O2.hr =conv_resp_unit(mL_O2.hr, "mL", "uL"), # converting from mL to uL
-    mmolO2.hr = conv_resp_unit(umolO2.hr, "umol", "mmol"), # converting from umol to mmol
-    molO2.hr = conv_resp_unit(umolO2.hr, "umol", "mol"), # converting from umol to mol
-    
-    # normalizing to ash free dry weight (grams)
-    #umolO2.gram.hr.uncorrected = umolO2.hr.uncorrected / Ash_Free_Dry_Weight,
-    umolO2.gram.hr = umolO2.hr / Ash_Free_Dry_Weight, 
-    mmolO2.gram.hr = mmolO2.hr / Ash_Free_Dry_Weight,
-    molO2.gram.hr = molO2.hr / Ash_Free_Dry_Weight,
-    uL_O2.gram.hr = uL_O2.hr / Ash_Free_Dry_Weight,
-    mL_O2.gram.hr = mL_O2.hr / Ash_Free_Dry_Weight,
-
-    #cellular respiration, oxygen (O2) is consumed to produce energy in the form of adenosine triphosphate (ATP)
-    # C6H12O6 + 6O2 → 6CO2 + 6H2O + energy (as ATP)
-    #Using the calorific coefficient to convert to energy
-    joules.gram.hour = mmolO2.gram.hr * 460.00, #using the average conversion factor 460.00 J/mmol O2
-    kcal.gram.hour = NISTjouleTOkilocal(joules.gram.hour), #converting from Joules to 1 kcal is equal to 4184 Joules
-    
-    # correcting for negative respiration rates and for values that fall below 0
-    #uumolO2.gram.hr.uncorrected = ifelse(umolO2.gram.hr.uncorrected < 0, 0, umolO2.gram.hr.uncorrected)) %>%
-    umolO2.gram.hr = ifelse(umolO2.gram.hr < 0, 0, umolO2.gram.hr),
-    mL_O2.gram.hr = ifelse(mL_O2.gram.hr < 0, 0, mL_O2.gram.hr)) %>% 
-  
-  filter(Identity == "Treatment") %>% 
-  select(-blank.rate, Snail_ID, Ash_Free_Dry_Weight, Temp_Treatment, pH_Treatment, umolO2.hr, uL_O2.hr, umolO2.gram.hr, uL_O2.gram.hr,
-         molO2.gram.hr, mL_O2.gram.hr, joules.gram.hour, kcal.gram.hour, Temp.C, Salinity, Pressure, Volume_mL, Tank_ID, Mean_Temp_C, mean_pH, File_ID) 
-
- as_tibble(respo.rates.dataset)
-
-write_csv(respo.rates.dataset, here("Data", "Thinned_Respirometry_Data", "Respiration.Rates.Dataset.csv"))
-
-#Paine 1971 ~206 uL O2/g/hr @ 13.5 C ~ 413 uL O2/g/hr @ 23 C (+ or - 66 uL O2/g/hr)
+# cleaning the Respirometry Data 
+#filtering out irresponsive snails & snails not run in respirometry
+respo.rates.dataset <- respo.rates.dataset %>% 
+  filter(Snail_ID != 36,
+         Snail_ID != 43,
+         Snail_ID != 72,
+         Snail_ID != 61,
+         Snail_ID != 67,
+         Snail_ID != 52
+         ) # mortality (not responsive to forceps)
 
 ```
 
+# Select a rate to continue with analysis 
+
+
 ```{r}
-
-
-joule.rates.dataset <- respo.rates.dataset %>% 
-  mutate(Temp_Treatment=as.factor(Temp_Treatment), pH_Treatment=as.factor(pH_Treatment)) %>%
-  select(Snail_ID, Temp_Treatment, pH_Treatment, kcal.gram.hour, joules.gram.hour, Temp.C, Salinity, Pressure, Volume_mL, Tank_ID, mean_pH)
-
-# Perform a two-way ANOVA
-anova_result <- anova(lm(joules.gram.hour ~ Temp_Treatment * pH_Treatment, data = joule.rates.dataset))
-
-# Print the ANOVA table
-print(anova_result)
-# significant p value (1.101e-08 ***) for temp treatment but not for ph treatment (0.1235)
-
-# Perform a Tukey's HSD test
-tukey_result <- TukeyHSD(aov(joules.gram.hour ~ Temp_Treatment * pH_Treatment, data = joule.rates.dataset))
-
-# Print the Tukey's HSD test
-print(tukey_result)
-
-# joule rate summary statistics 
-joule.rates.summary <- joule.rates.dataset %>%
-  filter(pH_Treatment != "Sump") %>%
-  group_by(Temp_Treatment, pH_Treatment) %>%
-  summarize(
-    Mean_joule_sec = mean(joules.gram.hour),
-    Median_joule_sec = median(joules.gram.hour),
-    Min_joule_sec = min(joules.gram.hour),
-    Max_joule_sec = max(joules.gram.hour),
-    SD_joule_sec = sd(joules.gram.hour),
-    SE_joule_sec = sd(joules.gram.hour) / sqrt(n()),
-    N_joule_sec = n()
-  ) 
-  
-# Print the ANOVA table
-print(joule.rates.summary)
-
-mean_joule_sec <- joule.rates.summary %>%
-  group_by(Temp_Treatment,pH_Treatment) %>%
-  select(Temp_Treatment, pH_Treatment, Mean_joule_sec) 
-
-# Pivot the data to have Temp_Treatment as rows and pH_Treatment as columns
-pivot_mean_joule_sec <- pivot_wider(mean_joule_sec, names_from = pH_Treatment, values_from = Mean_joule_sec)
-
-# Calculate the percent difference
-difference_mean_joule_sec <- pivot_mean_joule_sec %>%
-  group_by(Temp_Treatment) %>%
-  mutate(Percent_Difference = (Ambient-Low)) %>% 
-   mutate(Percent_Difference = Percent_Difference/Low * 100) %>% 
-  mutate(Percent_Difference=paste0(Percent_Difference,"%"))
-
-# Rename columns
-colnames(difference_mean_joule_sec) <- c("Temperature Treatment", "Ambient Energy Expenditure (J g^−1 h^−1)", "Low Energy Expenditure (J g^−1 h^−1)", "Percent Difference")
-
-#  "Low" has a lower value than "Ambient," and the difference is expressed as a negative percentage of how much lower "Low" is compared to "Ambient." (this is without weight normalization)
-
-# Print the resulting data frame
-print(difference_mean_joule_sec)
-
-# Export the table
-write.csv(difference_mean_joule_sec, here::here("Output", "percent_difference_table.csv"), row.names = FALSE)
+respo.rates.dataset <- respo.rates.dataset %>% 
+  mutate(rate = umolO2_g_hr, temp = Temp.C) 
 ```
 
 
 ```{r}
-# Calculating Metablic Information from Respiration Rates 
 
-  # Reading in data for analysis 
-  ambient.pH.respo <- respo.rates.dataset %>% 
+# Calculates parameters from Q10 temperature coefficient for respirometry data
+
+# uLO2_g_hr ash free dry weight sample measured in lab
+low_pH_uLO2_g_hr_afdw <- respo.rates.dataset %>% 
+  filter(pH_Treatment == "Low") 
+
+ambient_pH_uLO2_g_hr_afdw <- respo.rates.dataset %>% 
   filter(pH_Treatment == "Ambient") 
 
-  # Reading in carbonate data for analysis
-  Carb <- read_csv(here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv")) %>% 
-  select(Temp_Treatment, pH_Treatment, TA, DO_mgL)
+# Estimating Q10 values for respirometry data
+low_pH_uLO2_g_hr_afdwQ10 <- respirometry::Q10(R_vec=low_pH_uLO2_g_hr_afdw$rate, T_vec=low_pH_uLO2_g_hr_afdw$temp)
+ambient_pH_uLO2_g_hr_afdwQ10 <- respirometry::Q10(R_vec=ambient_pH_uLO2_g_hr_afdw$rate, T_vec=ambient_pH_uLO2_g_hr_afdw$temp)
 
-  
-  # Total Alkalinity to find the mean TA encountered
-  TA <- Carb %>%
-  group_by(Temp_Treatment, pH_Treatment) %>%
-  summarize(TA = mean(TA, na.rm = TRUE))
-  
-  ambient.pH.respo <- ambient.pH.respo %>% 
-    left_join(TA, by = join_by(Temp_Treatment, pH_Treatment)) 
+low_pH_Q10 <- low_pH_uLO2_g_hr_afdwQ10[1]
+ambient_pH_Q10 <- ambient_pH_uLO2_g_hr_afdwQ10[1]
 
-  # Calculating Q10 values for respiration rates
-  Ambient_pH_Q10 <- Q10(R_vec=ambient.pH.respo$umolO2.gram.hr, T_vec=ambient.pH.respo$umolO2.gram.hr, model = TRUE) #larger temperature sensitivity
-  
-  # Calculate the metabolic scaling coefficient
-  Ambient_pH_b <- calc_b(mass=ambient.pH.respo$Ash_Free_Dry_Weight, MO2=ambient.pH.respo$umolO2.gram.hr, method = "nls", plot = "linear", b0_start = 1)
+# using q10 to calculate
+# Rtemperatures T1 and T2
+LT1 <- low_pH_uLO2_g_hr_afdw$temp[1]   
+LT2 <- low_pH_uLO2_g_hr_afdw$temp[4]  
+AT1 <- ambient_pH_uLO2_g_hr_afdw$temp[1]
+AT2 <- ambient_pH_uLO2_g_hr_afdw$temp[4]
 
-  # Calculate E - the slope of the relationship between-ln(x) and 1/(kB T), where kB is the Boltzmann constant expressed in eV/K.
-  Ambient_pH_E <- calc_E(x=ambient.pH.respo$umolO2.gram.hr, temp=ambient.pH.respo$Temp.C)
-  
-  # Respiratory Quotient ratio of CO2 produced to O2 consumed.
-  ambient_pH_RQ <- RQ(o2=ambient.pH.respo$umolO2.hr, o2_unit="umol_per_l", pH=ambient.pH.respo$mean_pH, TA=ambient.pH.respo$TA,
-     temp=ambient.pH.respo$Temp.C, sal=ambient.pH.respo$Salinity, atm_pres=ambient.pH.respo$Pressure)
-  
-  # Predicts the pH of seawater after a defined amount of oxygen consumption. #80% O^2 % for the mean O^2 mgL at 26 degrees C
-  ambient_predicted_pH <- predict_pH(start_o2 = 100, end_o2 = 90, start_pH=7.9, temp=ambient.pH.respo$Temp.C, sal=ambient.pH.respo$Salinity, 
-                                 RQ = 1, TA = ambient.pH.respo$TA)
+# Rates at temperatures T1 and T2
+LR1 <- low_pH_uLO2_g_hr_afdw$rate[1]   # Rate at temperature T1
+LR2 <- low_pH_uLO2_g_hr_afdw$rate[4]  # Rate at temperature T2
+AR1 <- ambient_pH_uLO2_g_hr_afdw$rate[1]   # Rate at temperature T1
+AR2 <- ambient_pH_uLO2_g_hr_afdw$rate[4]  # Rate at temperature T2
 
-  
-  # Used to Predict Biological Parameters
-  #adj_by_temp(meas_temp = ambient.pH.respo$Temp.C, meas_x = ambient.pH.respo$umolO2.gram.hr, temp_new = 23,
-              #method = "Q10", Q10 = Ambient_pH_Q10$Q10, E = Ambient_pH_E, show_coef = TRUE, plot_fit = TRUE)
-  
-  low.pH.respo <- respo.rates.dataset %>% 
-  filter(pH_Treatment == "Low") %>% 
-  left_join(TA, by = join_by(Temp_Treatment, pH_Treatment))
+# Calculate reference temperature (Tref)
+low_Tref <- LT2 - (10 * log(LR2/LR1) / (log(low_pH_Q10) * log(e)))
+ambient_Tref <- AT2 - (10 * log(AR2/AR1) / (log(ambient_pH_Q10) * log(e)))
 
-  #calculating Q10 values for respiration rates
-  low_pH_Q10 <- Q10(R_vec=low.pH.respo$umolO2.gram.hr, T_vec=low.pH.respo$umolO2.gram.hr, model = TRUE) 
-  
-  #Calculate the metabolic scaling coefficient
-  low_pH_b <- calc_b(mass=low.pH.respo$Ash_Free_Dry_Weight, MO2=low.pH.respo$umolO2.gram.hr, method = "nls", plot = "linear", b0_start = 1)
-
-  #Calculate E - the slope of the relationship between-ln(x) and 1/(kB T), where kB is the Boltzmann constant expressed in eV/K.
-  low_pH_E <- calc_E(x=low.pH.respo$umolO2.gram.hr, temp=low.pH.respo$Temp.C)
-  
-  # Respiratory Quotient ratio of CO2 produced to O2 consumed.
-  low_pH_RQ <-RQ(o2=low.pH.respo$umolO2.hr, o2_unit="umol_per_l", pH=low.pH.respo$mean_pH, TA=low.pH.respo$TA,
-     temp=low.pH.respo$Temp.C, sal=low.pH.respo$Salinity, atm_pres=low.pH.respo$Pressure)
-  
-  #Predicts the pH of seawater after a defined amount of oxygen consumption. #80% O^2 % for the mean O^2 mgL at 26 degrees C
-  low_predicted_pH <- predict_pH(start_o2 = 100, end_o2 = 90, start_pH=7.6, temp=low.pH.respo$Temp.C, sal=low.pH.respo$Salinity, 
-                                 RQ = 1, TA = low.pH.respo$TA)
-  
-  # Predict Biological Parameters 
-  #adj_by_temp(meas_temp = ambient.pH.respo$Temp.C, meas_x = ambient.pH.respo$umolO2.gram.hr, temp_new = 23,
-              #method = "Q10", Q10 = low_pH_Q10$Q10, E = low_pH_E, show_coef = TRUE, plot_fit = TRUE)
-
-# Paine 1971 Q10 of 2.64 for all ambient temperatures, and an RQ of 0.85 
-
-# Example placeholders for your calculated values - replace these with your actual results
-ambient_pH_Q10_value <- Ambient_pH_Q10$Q10
-ambient_pH_b_value <- Ambient_pH_b$b
-ambient_pH_E_value <- Ambient_pH_E
-ambient_pH_RQ_value <- mean(ambient_pH_RQ)
-
-low_pH_Q10_value <- low_pH_Q10$Q10
-low_pH_b_value <- low_pH_b$b
-low_pH_E_value <- low_pH_E
-low_pH_RQ_value <- mean(low_pH_RQ)
-
-# Create a dataframe to store the values in a tabular format
-parameters_table <- data.frame(
-  Parameter = c("Q10", "Metabolic Scaling Coefficient b", "E", "Respiratory Quotient (RQ)"),
-  Ambient_pH = c(ambient_pH_Q10_value, ambient_pH_b_value, ambient_pH_E_value, ambient_pH_RQ_value),
-  Low_pH = c(low_pH_Q10_value, low_pH_b_value, low_pH_E_value, low_pH_RQ_value)
-)
-
-# Print the table
-print(parameters_table)
-write_csv(parameters_table, here("Output", "Metabolic_Parameters.csv"))
+# Print reference temperature (Tref)
+print(low_Tref)
+print(ambient_Tref)
+low_pH_Q10
+ambient_pH_Q10
 ```
 
-# Thermal Performance Curve Analysis 
+
+#Thermal Performance Curve Model Selection & curve Fitting 
+
 
 ```{r}
-# Reading and preprocessing data
-experiment.data <- read_csv(here("Data", "Mesocosm_Data", "Mesocosm_Summary_Statistics.csv"), show_col_types = FALSE) %>% 
-  mutate(Temp_Treatment = as.factor(Temp_Treatment),
-         pH_Treatment = as.factor(pH_Treatment)) %>% 
-  filter(pH_Treatment != "Sump")
 
-respo.rates.dataset <- respo.rates.dataset %>% 
-  mutate(Temp_Treatment = as.factor(Temp_Treatment),
-         pH_Treatment = as.factor(pH_Treatment))
+# Function to get lower and upper limits for all thermal performance models in the rTPC package
+get_all_model_limits <- function(temp, rate) {
+  model_list <- get_model_names()
+  limits_list <- list()
+  
+  for (model in model_list) {
+    start_vals <- get_start_vals(temp, rate, model_name = model)
+    lower_limits <- get_lower_lims(temp, rate, model_name = model)
+    upper_limits <- get_upper_lims(temp, rate, model_name = model)
+    limits_list[[model]] <- list(start = start_vals, lower = lower_limits, upper = upper_limits)
+  }
+  
+  return(limits_list)
+}
 
-respo.rates.dataset.joined <- left_join(experiment.data, respo.rates.dataset, by = c("Temp_Treatment", "pH_Treatment"))
+compile_limits <- function(limits) {
+  limits_df <- do.call(rbind, lapply(names(limits), function(model) {
+    tibble(
+      Model = model,
+      Start = list(limits[[model]]$start),
+      Lower = list(limits[[model]]$lower),
+      Upper = list(limits[[model]]$upper)
+    )
+  })) %>% bind_rows()
 
-# Selecting and renaming necessary columns
-respo.rates.tpc <- respo.rates.dataset.joined %>% 
-  select(Snail_ID, Temp_Treatment, pH_Treatment, Temp.C, umolO2.gram.hr) %>%
-  rename(rate = umolO2.gram.hr, temp = Temp.C)
+  # Expanding the lists assuming each has uniform length
+  limits_df_expanded <- limits_df %>%
+    unnest(cols = c(Start, Lower, Upper))
+
+  return(limits_df_expanded)
+}
+
+
+limits <- get_all_model_limits(respo.rates.tpc$temp, respo.rates.tpc$rate)
+limits_df <- compile_limits(limits)
+print(limits_df)
 
 ```
 
 
+```{r}
+
+respo.rates.tpc <- respo.rates.tpc
+
+# fit every model formulation in rTPC
+model_selection_fits <- nest(respo.rates.tpc, data = c(temp, rate)) %>% 
+   mutate(boatman = map(data, ~nls_multstart(rate~boatman_2017(temp = temp, rmax, tmin, tmax, a,b),
+                        data = .x,
+                        iter = c(4,4,4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'boatman_2017') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'boatman_2017') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'boatman_2017'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'boatman_2017'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         gaussian = map(data, ~nls_multstart(rate~gaussian_1987(temp = temp, rmax, topt, a),
+                        data = .x,
+                        iter = c(4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'gaussian_1987') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'gaussian_1987') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'gaussian_1987'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'gaussian_1987'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         oneill = map(data, ~nls_multstart(rate~oneill_1972(temp = temp, rmax, ctmax, topt, q10),
+                        data = .x,
+                        iter = c(4,4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'oneill_1972') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'oneill_1972') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'oneill_1972'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'oneill_1972'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         quadratic = map(data, ~nls_multstart(rate~quadratic_2008(temp = temp, a, b, c),
+                        data = .x,
+                        iter = c(4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'quadratic_2008') - 0.5,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'quadratic_2008') + 0.5,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'quadratic_2008'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'quadratic_2008'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         sharpeschoolhigh = map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 12),
+                        data = .x,
+                        iter = c(4,4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         weibull = map(data, ~nls_multstart(rate~weibull_1995(temp = temp, a,topt,b,c),
+                        data = .x,
+                        iter = c(4,4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'weibull_1995') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'weibull_1995') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'weibull_1995'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'weibull_1995'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)))
+    # Save model predictions 
+    saveRDS(combined_preds, here("Output", "sharpe_schoolfield_combined_predictions.rds"))
+    glimpse(select(model_selection_fits, 1:10))
+
+glimpse(select(model_selection_fits, 1:10))
+
+# stack models
+model_stack <- select(model_selection_fits, -data) %>%
+  pivot_longer(., names_to = 'model_name', values_to = 'fit', boatman:weibull)
+
+# stack models for low pH
+  low_pH_model_stack <- dplyr::select(low_pH_model_fits, -data) %>%
+  pivot_longer(., names_to = 'model_name', values_to = 'fit', gaussian:weibull)
+
+# stack models for high pH
+  high_pH_model_stack <- dplyr::select(high_pH_model_fits, -data) %>%
+  pivot_longer(., names_to = 'model_name', values_to = 'fit', gaussian:weibull)
+  
+# get parameters using tidy
+  high_pH_model_params <- high_pH_model_stack %>%
+  mutate(., est = map(fit, tidy)) %>%
+  dplyr::select(-fit) %>%
+  unnest(est)
+model_aic <- model_stack %>%
+  mutate(., info = map(fit, glance),
+         AICc =  map_dbl(fit, MuMIn::AICc)) %>%
+  select(-fit) %>%
+  unnest(info) %>%
+  select(Treatment=pH_Treatment, model_name, sigma, AIC, AICc, BIC, df.residual)
+
+print(model_aic)
+
+# Print the best model
+print(best_model)
+
+# showing data in table format
+model_aic %>% 
+  group_by(model_name) %>% 
+  gt(rowname_col = "pH_Treatment") %>%
+  tab_header(title = md("**Thermal Performance Models Statistical Summaries**")) %>% 
+  gt_highlight_rows(rows = c(7,10), font_weight = "normal") 
+
+low_pH_best_model <- model_aic %>%
+  filter(Treatment == "Low") %>% 
+  filter(AICc == min(AICc)) %>%
+  pull(model_name)
+
+high_pH_best_model <- model_aic %>%
+  filter(Treatment == "Ambient") %>% 
+  filter(AICc == min(AICc)) %>%
+  pull(model_name)
+```
+
+
+from plot find_statistic(m)
+
+```{r}
+# get parameters using tidy
+params <- model_stack %>%
+  mutate(., est = map(fit, tidy)) %>%
+  select(-fit) %>%
+  unnest(est)
+
+# get predictions using augment
+newdata <- tibble(temp = seq(min(respo.rates.tpc$temp), max(respo.rates.tpc$temp), length.out = 100))
+model_preds <- model_stack %>%
+  mutate(., preds = map(fit, augment, newdata = newdata)) %>%
+  select(-fit) %>%
+  unnest(preds)
+
+# seperating the curves for graphing seperate
+high_pH <- filter(respo.rates.tpc, pH_Treatment == "Ambient") 
+high_pH_model_preds <- filter(model_preds, pH_Treatment == "Ambient")
+low_pH <- filter(respo.rates.tpc, pH_Treatment == "Low") 
+low_pH_model_preds <- filter(model_preds, pH_Treatment == "Low")
+
+# take a random point from each model for labelling
+high_pH_model_labs <- filter(high_pH_model_preds, temp < 24) %>%
+  group_by(., model_name) %>%
+  sample_n(., 1) %>%
+  ungroup()
+
+# take a random point from each model for labelling
+low_pH_model_labs <- filter(low_pH_model_preds, temp < 24) %>%
+  group_by(., model_name) %>%
+  sample_n(., 1) %>%
+  ungroup()
+
+# plot
+ggplot(model_preds, aes(temp, rate, color = pH_Treatment)) +
+  geom_point(aes(temp, rate), respo.rates.tpc) +
+  geom_line(aes(temp, .fitted)) +
+  facet_wrap(~model_name, labeller = labeller(model_name = label_facets_num),
+             scales = 'free', ncol = 5) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = 'none',
+        strip.text = element_text(hjust = 0),
+        strip.background = element_blank()) +
+  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), 
+                     name = "Treatment") +
+  labs(x = 'Temperature (ºC)',
+       y = "(Respiration Rate (µmol g⁻¹ hr⁻¹)",
+       title = 'Fits of TPC Models') +
+  geom_hline(aes(yintercept = 0), linetype = 2)
+
+# multiple models low pH plot
+ggplot(low_pH_model_preds, aes(temp, .fitted)) +
+  geom_line(aes(col = model_name)) +
+  geom_label_repel(aes(temp, .fitted, label = model_name, col = model_name), fill = 'white', nudge_y = 2, segment.size = 0.5, segment.colour = 'grey50', low_pH_model_labs) +
+  geom_point(aes(temp, rate), low_pH) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = 'none') +
+  labs(x = 'Temperature (ºC)',
+       y = "(Respiration Rate (µmol g⁻¹ hr⁻¹)",
+       title = 'rTPC Model Fits - low pH') +
+  geom_hline(aes(yintercept = 0), linetype = 2) +
+  scale_color_brewer(type = 'qual', palette = 2)
+
+# multiple models high pH plot
+ggplot(high_pH_model_preds, aes(temp, .fitted)) +
+  geom_line(aes(col = model_name)) +
+  geom_label_repel(aes(temp, .fitted, label = model_name, col = model_name), fill = 'white', nudge_y = 2, segment.size = 0.5, segment.colour = 'grey50', high_pH_model_labs) +
+  geom_point(aes(temp, rate), high_pH) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = 'none') +
+  labs(x = 'Temperature (ºC)',
+       y = "(Respiration Rate (µmol g⁻¹ hr⁻¹)",
+       title = 'rTPC Model Fits - high pH') +
+  geom_hline(aes(yintercept = 0), linetype = 2) +
+  scale_color_brewer(type = 'qual', palette = 2)
+```
 ```{r}
 # Splitting data by pH treatment
 low.pH <- filter(respo.rates.tpc, pH_Treatment == 'Low')
@@ -549,66 +431,53 @@ combined_preds <- bind_rows(
 
 # Plotting the combined predictions
 ggplot(combined_preds, aes(x = temp, y = .fitted, color = pH_Treatment)) +
+  geom_image(aes(image = image), size = 0.005) +
   geom_line() +
   theme_bw() +
   labs(
     x = 'Temperature (ºC)',
-    y = 'Respiration Rate (µmol g⁻¹ hr⁻¹)',
+    y = ')',
     title = 'Sharpe-Schoolfield Model Fit for TPC Curves'
   ) +
   scale_color_manual(values = c('Low' = 'cyan3', 'Ambient' = 'orange'))
 
-# Save model predictions to avoid re-running expensive computations
-saveRDS(combined_preds, here("Output", "sharpe_schoolfield_combined_predictions.rds"))
 ```
 
 
 
-
 ```{r}
+# Respiration Summary Statistics 
 
-experiment.data <- read_csv(here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"), show_col_types = FALSE) %>% 
-  mutate(Temp_Treatment = as.factor(Temp_Treatment),
-         pH_Treatment = as.factor(pH_Treatment)) %>% 
-  filter(pH_Treatment != "Sump")
 
-respo.rates.dataset <- left_join(experiment.data, respo.rates.dataset, by = c("Temp_Treatment", "pH_Treatment"))
+#creating a function for standard error 
+se <- function(x) (sd(x) / sqrt(length(x)))
 
-#load in the data set and select for temperature, rate, and pH treatment
-respo.rates.tpc <- respo.rates.dataset %>% 
-  mutate(rate=umol.gram.hour, temp=Temp.C, temp2=Temp_C) %>%
-  dplyr::select(Temp_Treatment, pH_Treatment, temp, rate) 
+respo.rates.stats <- respo.rates.dataset %>% 
+  dplyr::select(Snail_ID, Temp_Treatment, pH_Treatment, 
+         umolO2.gm.hr, umolO2.gm.hr., Temp.C) %>%
+  mutate(pH_Treatment = as.factor(pH_Treatment)) %>% 
+  group_by(Temp_Treatment, pH_Treatment) %>% 
+  summarize(mean.umolO2.gm.hr =mean(umolO2.gm.hr),
+            var.umolO2.gm.hr = var(umolO2.gm.hr),
+            sd.umolO2.gm.hr = sd(umolO2.gm.hr),
+            se.umolO2.gm.hr =se(umolO2.gm.hr),
+            mean.umolO2.gm.hr = mean(umolO2.gm.hr),
+            var.umolO2.gm.hr = var(umolO2.gm.hr),
+            sd.umolO2.gm.hr = sd(umolO2.gm.hr),
+            se.umolO2.gm.hr =se(umolO2.gm.hr),
+            mean.Temp.C = mean(Temp.C),
+            var.Temp.C = var(Temp.C),
+            sd.Temp.C = sd(Temp.C),
+            se.Temp.C = se(Temp.C))
 
-# Create a single ggplot graph with both curves
-respo.rates.plot.1 <- ggplot(respo.rates.tpc, aes(temp, rate, color = pH_Treatment)) +
-  geom_image(aes(image = image), size = 0.075) +
-  theme_bw(base_size = 12) +
-  labs(
-    x = 'Temperature (ºC)',
-    y = 'µmol g⁻¹ hr⁻¹',
-  ) +
-  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"))
-
-# Create a single ggplot graph with both curves
-respo.rates.plot.2 <- ggplot(joule.rates.tpc, aes(temp2, rate, color = pH_Treatment)) +
-  geom_image(aes(image = image), size = 0.075) +
-  theme_bw(base_size = 12) +
-  labs(
-    x = 'Temperature (ºC)',
-    y = 'µmol g⁻¹ hr⁻¹',
-  ) +
-  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"))
-
-# Print the combined plot
-print(respo.rates.plot.1)
-print(respo.rates.plot.2)
-
+as_tibble(respo.rates.stats)
 ```
 
-
 ```{r}
-respo.rates.tpc<- joule.rates.tpc %>% 
-  select(temp, rate, pH_Treatment)
+
+respo.rates.tpc <- respo.rates.tpc %>% 
+  dplyr::select(Snail_ID, Temp_Treatment, pH_Treatment, 
+         rate=umolO2.g.hr, temp=Temp.C) 
 
 # Load in data and filter to keep just a single curve (low pH)
 low.pH <- filter(respo.rates.tpc, pH_Treatment == 'Low')
@@ -685,10 +554,239 @@ ggplot(combined_preds) +
   ) +
   scale_color_manual(values = c('Low' = 'cyan3', 'Ambient' = 'orange'))
 
+# Bootstrapping Sharpe Schoolfield
+
+sharpeshool_low_pH_fit <- nest(low.pH, data = c(temp, rate)) %>%
+  mutate(sharpeschoolhigh = map(high.pH, ~nls.multstart::nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 20),
+                        data = .x,
+                        iter = 500,
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         # create new temperature data
+         new_data = map(high.pH, ~tibble(temp = seq(min(.x$temp), max(.x$temp), length.out = 100))),
+         # predict over that data,
+         preds =  map2(sharpeschoolhigh, new_data, ~augment(.x, newdata = .y)))
+
+# unnest predictions
+low_pH_preds <- select(sharpeshool_low_pH_fit, preds) %>%
+  unnest(preds)
+
+# Bootstrap models  Refit model using nlsLM
+sharpeschool_low_fit_nlsLM <- minpack.lm::nlsLM(rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref=20),
+                                   data = low.pH,
+                                   start = coef(sharpeshool_low_pH_fit$sharpeschoolhigh[[1]]),
+                                   lower = get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                   upper = get_upper_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                   control = nls.lm.control(maxiter=1000),
+                                   weights = rep(1, nrow(low.pH)))
+
+# Bootstrap using case resampling
+boot.low.pH <- Boot(sharpeschool_low_fit_nlsLM, method = 'case')
+hist(boot.low.pH, layout = c(2,2))
+
+# Create predictions of each bootstrapped model
+boot_low_preds <- boot.low.pH$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = row_number()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(low.pH$temp), max(low.pH$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = sharpeschoolhigh_1981(temp, r_tref, e, eh, th, tref=20))
+
+# Calculate bootstrapped confidence intervals
+boot_low_conf_preds <- boot_low_preds %>%
+  group_by(temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975)) %>%
+  ungroup()
+
+# Plot bootstrapped CIs
+boot.low.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), data = low_pH_preds, col = 'cyan3') +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper), data = boot_low_conf_preds, fill = 'cyan3', alpha = 0.3) +
+  geom_image(aes(temp, rate, image = image), data = low.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'µmol g⁻¹ hr⁻¹') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Plot bootstrapped predictions
+boot.low.pH.plot.predictions <- ggplot() +
+  geom_line(aes(temp, .fitted), data = low_pH_preds, col = 'cyan3') +
+  geom_line(aes(temp, pred, group = iter), data = boot_low_preds, col = 'cyan3', alpha = 0.007) +
+  geom_image(aes(temp, rate, image = image), data = low.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       title = 'Respiration Rate for *Tegula funebralis* at Low pH (pH ~7.7)') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+sharpeshool_high_pH_fit <- nest(high.pH, data = c(temp, rate)) %>%
+  mutate(sharpeschoolhigh = map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 20),
+                        data = .x,
+                        iter = c(3,3,3,3),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         # create new temperature data
+         new_data = map(data, ~tibble(temp = seq(min(.x$temp), max(.x$temp), length.out = 100))),
+         # predict over that data,
+         preds =  map2(sharpeschoolhigh, new_data, ~augment(.x, newdata = .y)))
+
+# unnest predictions
+high_pH_preds <- select(sharpeshool_high_pH_fit, preds) %>%
+  unnest(preds)
+
+# Refit model using nlsLM for high pH
+sharpeschool_high_fit_nlsLM <- minpack.lm::nlsLM(rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref=20),
+                                    data = high.pH,
+                                    start = coef(sharpeshool_high_pH_fit$sharpeschoolhigh[[1]]),
+                                    lower = get_lower_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                    upper = get_upper_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                                    control = nls.lm.control(maxiter=1000),
+                                    weights = rep(1, nrow(high.pH)))
+
+# Bootstrap using case resampling
+boot.high.pH <- Boot(sharpeschool_high_fit_nlsLM, method = 'case')
+hist(boot.high.pH, layout = c(2,2))
+
+# Create predictions of each bootstrapped model
+boot_high_preds <- boot.high.pH$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = row_number()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(high.pH$temp), max(high.pH$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = sharpeschoolhigh_1981(temp, r_tref, e, eh, th, tref=20))
+
+# Calculate bootstrapped confidence intervals
+boot_high_conf_preds <- boot_high_preds %>%
+  group_by(temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975)) %>%
+  ungroup()
+
+# Plot bootstrapped CIs
+boot.high.pH.plot <- ggplot() +
+  geom_line(aes(temp, .fitted), data = high_pH_preds, col = 'orange') +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper), data = boot_high_conf_preds, fill = 'orange', alpha = 0.3) +
+  geom_image(aes(temp, rate, image = image), data = high.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       y = 'µmol g⁻¹ hr⁻¹',
+       title = 'Respiration Rate for *Tegula funebralis* at Ambient pH (pH ~7.7)') +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Plot bootstrapped predictions
+boot.high.pH.plot.predictions <- ggplot() +
+  geom_line(aes(temp, .fitted), data = high_pH_preds, col = 'orange') +
+  geom_line(aes(temp, pred, group = iter), data = boot_high_preds, col = 'orange', alpha = 0.007) +
+  geom_image(aes(temp, rate, image = image), data = high.pH, size = 0.075, alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  labs(x = 'Temperature (ºC)',
+       title = 'Respiration Rate for *Tegula funebralis* at Ambient pH (pH ~7.7)') +
+  scale_y_continuous(limits = c(0, 140), breaks = seq(0, 149, by = 20)) +
+  scale_x_continuous(limits = c(12, 28), breaks = seq(12, 28, by = 2)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Combine the plots
+boot.low.pH.plot + boot.low.pH.plot.predictions
+
+# Combine the plots
+boot.high.pH.plot + boot.low.pH.plot.predictions
 ```
 
-
 ```{r}
+
+# Load in data and filter to keep just a single curve (low pH)
+low.pH <- filter(respo.rates.tpc, pH_Treatment == 'Low')
+
+# Load in data and filter to keep just a single curve (high pH)
+high.pH <- filter(respo.rates.tpc, pH_Treatment == 'Ambient')
+
+# Sharpe-Schoolfield Thermal Performance Curves
+
+# Get start values and fit model for low pH
+start_vals_low <- get_start_vals(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981')
+
+# Fit the Sharpe-Schoolfield model for low pH
+sharpe_schoolfield_mod_low <- nls_multstart(
+  rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref = 20),
+  data = low.pH,
+  iter = c(3, 3, 3, 3),
+  start_lower = start_vals_low - 10,
+  start_upper = start_vals_low + 10,
+  lower = get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  upper = get_upper_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  supp_errors = 'Y',
+  control = nls.lm.control(maxiter=1000),
+  convergence_count = FALSE
+)
+
+# Look at the model fit summary for low pH
+summary(sharpe_schoolfield_mod_low)
+
+# Get predictions for low pH
+preds_low <- data.frame(temp = seq(min(low.pH$temp), max(low.pH$temp), length.out = 100))
+preds_low <- broom::augment(sharpe_schoolfield_mod_low, newdata = preds_low)
+
+# Get start values and fit model for high pH
+start_vals_high <- get_start_vals(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981')
+
+# Fit the Sharpe-Schoolfield model for high pH
+sharpe_schoolfield_mod_high <- nls_multstart(
+  rate ~ sharpeschoolhigh_1981(temp = temp, r_tref, e, eh, th, tref = 20),
+  data = high.pH,
+  iter = c(3, 3, 3, 3),
+  start_lower = start_vals_high - 10,
+  start_upper = start_vals_high + 10,
+  lower = get_lower_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  upper = get_upper_lims(high.pH$temp, high.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  supp_errors = 'Y',
+  control = nls.lm.control(maxiter=1000),
+  convergence_count = FALSE
+)
+
+# Look at the model fit summary for high pH
+summary(sharpe_schoolfield_mod_high)
+
+# Get predictions for high pH
+preds_high <- data.frame(temp = seq(min(high.pH$temp), max(high.pH$temp), length.out = 100))
+preds_high <- broom::augment(sharpe_schoolfield_mod_high, newdata = preds_high)
+
+# Combine low pH and high pH predictions
+combined_preds <- rbind(
+  cbind(preds_low, pH_Treatment = 'Low'),
+  cbind(preds_high, pH_Treatment = 'Ambient')
+)
+
+# Plot the results for both low pH and high pH
+ggplot(combined_preds) +
+  geom_image(aes(temp, rate, image=image, color = pH_Treatment),
+             respo.rates.tpc, size = 0.075, alpha = 0.5) +
+  geom_line(aes(temp, .fitted, color = pH_Treatment)) +
+  theme_bw() +
+  labs(
+    x = 'Temperature',
+    y = 'Respiration Rate (µmol g⁻¹ hr⁻¹)',
+    title = 'Sharpe-Schoolfield Model Fit for TPC Curves Low (~7.7) and Ambient (8.0) pH'
+  ) +
+  scale_color_manual(values = c('Low' = 'cyan3', 'Ambient' = 'orange'))
+
 # Bootstrapping Sharpe Schoolfield
 
 sharpeshool_low_pH_fit <- nest(low.pH, data = c(temp, rate)) %>%
@@ -845,541 +943,9 @@ boot.low.pH.plot + boot.low.pH.plot.predictions
 boot.high.pH.plot + boot.low.pH.plot.predictions
 ```
 
-```{r}
 
-joule.rates.tpc<- joule.rates.tpc %>% 
-  select(temp, rate, Temp_Treatment, pH_Treatment)
 
-# fit every model formulation in rTPC
-model_selection_fits <- nest(joule.rates.tpc, data = c(temp, rate)) %>% 
-   mutate(boatman = map(data, ~nls_multstart(rate~boatman_2017(temp = temp, rmax, tmin, tmax, a,b),
-                        data = .x,
-                        iter = c(4,4,4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'boatman_2017') - 10,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'boatman_2017') + 10,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'boatman_2017'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'boatman_2017'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)),
-         gaussian = map(data, ~nls_multstart(rate~gaussian_1987(temp = temp, rmax, topt, a),
-                        data = .x,
-                        iter = c(4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'gaussian_1987') - 10,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'gaussian_1987') + 10,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'gaussian_1987'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'gaussian_1987'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)),
-         oneill = map(data, ~nls_multstart(rate~oneill_1972(temp = temp, rmax, ctmax, topt, q10),
-                        data = .x,
-                        iter = c(4,4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'oneill_1972') - 10,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'oneill_1972') + 10,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'oneill_1972'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'oneill_1972'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)),
-         quadratic = map(data, ~nls_multstart(rate~quadratic_2008(temp = temp, a, b, c),
-                        data = .x,
-                        iter = c(4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'quadratic_2008') - 0.5,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'quadratic_2008') + 0.5,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'quadratic_2008'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'quadratic_2008'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)),
-         rezende = map(data, ~nls_multstart(rate~rezende_2019(temp = temp, q10, a,b,c),
-                        data = .x,
-                        iter = c(4,4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'rezende_2019') - 10,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'rezende_2019') + 10,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'rezende_2019'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'rezende_2019'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)),
-         sharpeschoolfull = map(data, ~nls_multstart(rate~sharpeschoolfull_1981(temp = temp, r_tref,e,el,tl,eh,th, tref = 15),
-                        data = .x,
-                        iter = c(4,4,4,4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981') - 10,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981') + 10,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)),
-         sharpeschoolhigh = map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
-                        data = .x,
-                        iter = c(4,4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)),
-         weibull = map(data, ~nls_multstart(rate~weibull_1995(temp = temp, a,topt,b,c),
-                        data = .x,
-                        iter = c(4,4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'weibull_1995') - 10,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'weibull_1995') + 10,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'weibull_1995'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'weibull_1995'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)))
 
-glimpse(select(model_selection_fits, 1:10))
-
-# stack models
-model_stack <- select(model_selection_fits, -data) %>%
-  pivot_longer(., names_to = 'model_name', values_to = 'fit', boatman:weibull)
-
-# get parameters using tidy
-params <- model_stack %>%
-  mutate(., est = map(fit, tidy)) %>%
-  select(-fit) %>%
-  unnest(est)
-
-# get predictions using augment
-newdata <- tibble(temp = seq(min(respo.rates.tpc$temp), max(respo.rates.tpc$temp), length.out = 100))
-model_preds <- model_stack %>%
-  mutate(., preds = map(fit, augment, newdata = newdata)) %>%
-  select(-fit) %>%
-  unnest(preds)
-
-# seperating the curves for graphing seperate
-high_pH <- filter(respo.rates.tpc, pH_Treatment == "Ambient") 
-high_pH_model_preds <- filter(model_preds, pH_Treatment == "Ambient")
-low_pH <- filter(respo.rates.tpc, pH_Treatment == "Low") 
-low_pH_model_preds <- filter(model_preds, pH_Treatment == "Low")
-
-# take a random point from each model for labelling
-high_pH_model_labs <- filter(high_pH_model_preds, temp < 24) %>%
-  group_by(., model_name) %>%
-  sample_n(., 1) %>%
-  ungroup()
-
-# take a random point from each model for labelling
-low_pH_model_labs <- filter(low_pH_model_preds, temp < 24) %>%
-  group_by(., model_name) %>%
-  sample_n(., 1) %>%
-  ungroup()
-
-
-# plot
-ggplot(model_preds, aes(temp, rate, color = pH_Treatment)) +
-  geom_point(aes(temp, rate), respo.rates.tpc) +
-  geom_line(aes(temp, .fitted)) +
-  facet_wrap(~model_name, labeller = labeller(model_name = label_facets_num),
-             scales = 'free', ncol = 5) +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = 'none',
-        strip.text = element_text(hjust = 0),
-        strip.background = element_blank()) +
-  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), 
-                     name = "Treatment") +
-  labs(x = 'Temperature (ºC)',
-       y = 'Metabolic Rate',
-       title = 'Fits of TPC Models') +
-  geom_hline(aes(yintercept = 0), linetype = 2)
-
-# multiple models low pH plot
-ggplot(low_pH_model_preds, aes(temp, .fitted)) +
-  geom_line(aes(col = model_name)) +
-  geom_label_repel(aes(temp, .fitted, label = model_name, col = model_name), fill = 'white', nudge_y = 2, segment.size = 0.5, segment.colour = 'grey50', low_pH_model_labs) +
-  geom_point(aes(temp, rate), low_pH) +
-  theme_bw(base_size = 12) +
-  theme(legend.position = 'none') +
-  labs(x = 'Temperature (ºC)',
-       y = 'Metabolic rate',
-       title = 'rTPC Model Fits - low pH') +
-  geom_hline(aes(yintercept = 0), linetype = 2) +
-  scale_color_brewer(type = 'qual', palette = 2)
-
-# multiple models high pH plot
-ggplot(high_pH_model_preds, aes(temp, .fitted)) +
-  geom_line(aes(col = model_name)) +
-  geom_label_repel(aes(temp, .fitted, label = model_name, col = model_name), fill = 'white', nudge_y = 2, segment.size = 0.5, segment.colour = 'grey50', high_pH_model_labs) +
-  geom_point(aes(temp, rate), high_pH) +
-  theme_bw(base_size = 12) +
-  theme(legend.position = 'none') +
-  labs(x = 'Temperature (ºC)',
-       y = 'Metabolic rate',
-       title = 'rTPC Model Fits - high pH') +
-  geom_hline(aes(yintercept = 0), linetype = 2) +
-  scale_color_brewer(type = 'qual', palette = 2)
-
-glimpse(select(model_selection_fits, 1:10))
-
-# stack models
-model_stack <- select(model_selection_fits, -data) %>%
-  pivot_longer(., names_to = 'model_name', values_to = 'fit', boatman:weibull)
-
-# get parameters using tidy
-params <- model_stack %>%
-  mutate(., est = map(fit, tidy)) %>%
-  select(-fit) %>%
-  unnest(est)
-
-# get predictions using augment
-newdata <- tibble(temp = seq(min(respo.rates.tpc$temp), max(respo.rates.tpc$temp), length.out = 100))
-model_preds <- model_stack %>%
-  mutate(., preds = map(fit, augment, newdata = newdata)) %>%
-  select(-fit) %>%
-  unnest(preds)
-
-# seperating the curves for graphing seperate
-high_pH <- filter(respo.rates.tpc, pH_Treatment == "Ambient") 
-high_pH_model_preds <- filter(model_preds, pH_Treatment == "Ambient")
-low_pH <- filter(respo.rates.tpc, pH_Treatment == "Low") 
-low_pH_model_preds <- filter(model_preds, pH_Treatment == "Low")
-
-# take a random point from each model for labelling
-high_pH_model_labs <- filter(high_pH_model_preds, temp < 24) %>%
-  group_by(., model_name) %>%
-  sample_n(., 1) %>%
-  ungroup()
-
-# take a random point from each model for labelling
-low_pH_model_labs <- filter(low_pH_model_preds, temp < 24) %>%
-  group_by(., model_name) %>%
-  sample_n(., 1) %>%
-  ungroup()
-
-
-# plot
-ggplot(model_preds, aes(temp, rate, color = pH_Treatment)) +
-  geom_point(aes(temp, rate), respo.rates.tpc) +
-  geom_line(aes(temp, .fitted)) +
-  facet_wrap(~model_name, labeller = labeller(model_name = label_facets_num),
-             scales = 'free', ncol = 5) +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = 'none',
-        strip.text = element_text(hjust = 0),
-        strip.background = element_blank()) +
-  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), 
-                     name = "Treatment") +
-  labs(x = 'Temperature (ºC)',
-       y = 'Metabolic Rate',
-       title = 'Fits of TPC Models') +
-  geom_hline(aes(yintercept = 0), linetype = 2)
-
-# multiple models low pH plot
-ggplot(low_pH_model_preds, aes(temp, .fitted)) +
-  geom_line(aes(col = model_name)) +
-  geom_label_repel(aes(temp, .fitted, label = model_name, col = model_name), fill = 'white', nudge_y = 2, segment.size = 0.5, segment.colour = 'grey50', low_pH_model_labs) +
-  geom_point(aes(temp, rate), low_pH) +
-  theme_bw(base_size = 12) +
-  theme(legend.position = 'none') +
-  labs(x = 'Temperature (ºC)',
-       y = 'Metabolic rate',
-       title = 'rTPC Model Fits - low pH') +
-  geom_hline(aes(yintercept = 0), linetype = 2) +
-  scale_color_brewer(type = 'qual', palette = 2)
-
-# multiple models high pH plot
-ggplot(high_pH_model_preds, aes(temp, .fitted)) +
-  geom_line(aes(col = model_name)) +
-  geom_label_repel(aes(temp, .fitted, label = model_name, col = model_name), fill = 'white', nudge_y = 2, segment.size = 0.5, segment.colour = 'grey50', high_pH_model_labs) +
-  geom_point(aes(temp, rate), high_pH) +
-  theme_bw(base_size = 12) +
-  theme(legend.position = 'none') +
-  labs(x = 'Temperature (ºC)',
-       y = 'Metabolic rate',
-       title = 'rTPC Model Fits - high pH') +
-  geom_hline(aes(yintercept = 0), linetype = 2) +
-  scale_color_brewer(type = 'qual', palette = 2)
-```
-
-
-
-# Respiration Summary Statistics 
-
-```{r Respiration Summary Statistics}
-
-respo.rates.dataset <- read_csv(here("Data", "Thinned_Respirometry_Data", "Respiration.Rates.Dataset.csv"))
-
-#creating a function for standard error 
-se <- function(x) (sd(x) / sqrt(length(x)))
-
-respo.rates.stats <- respo.rates.dataset %>% 
-  dplyr::select(Snail_ID, Temp_Treatment, pH_Treatment, 
-         umolO2.gram.hr.corrected, umolO2.gram.hr.uncorrected, Temp.C) %>%
-  mutate(pH_Treatment = as.factor(pH_Treatment)) %>% 
-  group_by(Temp_Treatment, pH_Treatment) %>% 
-  summarize(mean.umolO2.gram.hr.corrected =mean(umolO2.gram.hr.corrected),
-            var.umolO2.gram.hr.corrected = var(umolO2.gram.hr.corrected),
-            sd.umolO2.gram.hr.corrected = sd(umolO2.gram.hr.corrected),
-            se.umolO2.gram.hr.corrected =se(umolO2.gram.hr.corrected),
-            mean.umolO2.gram.hr.uncorrected = mean(umolO2.gram.hr.uncorrected),
-            var.umolO2.gram.hr.uncorrected = var(umolO2.gram.hr.uncorrected),
-            sd.umolO2.gram.hr.uncorrected = sd(umolO2.gram.hr.uncorrected),
-            se.umolO2.gram.hr.uncorrected =se(umolO2.gram.hr.uncorrected),
-            mean.Temp.C = mean(Temp.C),
-            var.Temp.C = var(Temp.C),
-            sd.Temp.C = sd(Temp.C),
-            se.Temp.C = se(Temp.C))
-
-as_tibble(respo.rates.stats)
-```
-#Cleaning and Visualzing Data for Thermal Performance Curve Model Selection
-
-```{r Cleaning and Visualizing Respo Data for rTPC Model Selection}
-
-#load in the data set and select for temperature, rate, and pH treatment
-respo.rates.tpc <- respo.rates.dataset %>% 
-  mutate(rate=umolO2.gram.hr.corrected, temp=Temp.C) %>%
-  dplyr::select(pH_Treatment, temp, rate)
-
-# Create a single ggplot graph with both curves and label the key as "Treatment"
-combined_plot <- ggplot(respo.rates.tpc, aes(temp, rate, color = pH_Treatment)) +
-  geom_image(aes(image = image), size = 0.075, alpha = 0.5) +
-  theme_bw(base_size = 12) +
-  labs(
-    x = 'Temperature (ºC)',
-    y = 'Respiration Rate' ) +
-  facet_wrap(~pH_Treatment) +
-  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), 
-                     name = "Treatment") +
-  theme_minimal()
-
-# Print the combined plot
-print(combined_plot)
-
-```
-
-
-
-```{r}
-
-# fit every model formulation in rTPC
-model_selection_fits <- nest(respo.rates.tpc, data = c(temp, rate)) %>% 
-   mutate(boatman = map(data, ~nls_multstart(rate~boatman_2017(temp = temp, rmax, tmin, tmax, a,b),
-                        data = .x,
-                        iter = c(4,4,4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'boatman_2017') - 10,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'boatman_2017') + 10,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'boatman_2017'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'boatman_2017'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)),
-         gaussian = map(data, ~nls_multstart(rate~gaussian_1987(temp = temp, rmax, topt, a),
-                        data = .x,
-                        iter = c(4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'gaussian_1987') - 10,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'gaussian_1987') + 10,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'gaussian_1987'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'gaussian_1987'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)),
-         oneill = map(data, ~nls_multstart(rate~oneill_1972(temp = temp, rmax, ctmax, topt, q10),
-                        data = .x,
-                        iter = c(4,4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'oneill_1972') - 10,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'oneill_1972') + 10,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'oneill_1972'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'oneill_1972'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)),
-         quadratic = map(data, ~nls_multstart(rate~quadratic_2008(temp = temp, a, b, c),
-                        data = .x,
-                        iter = c(4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'quadratic_2008') - 0.5,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'quadratic_2008') + 0.5,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'quadratic_2008'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'quadratic_2008'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)),
-         rezende = map(data, ~nls_multstart(rate~rezende_2019(temp = temp, q10, a,b,c),
-                        data = .x,
-                        iter = c(4,4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'rezende_2019') - 10,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'rezende_2019') + 10,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'rezende_2019'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'rezende_2019'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)),
-         sharpeschoolfull = map(data, ~nls_multstart(rate~sharpeschoolfull_1981(temp = temp, r_tref,e,el,tl,eh,th, tref = 15),
-                        data = .x,
-                        iter = c(4,4,4,4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981') - 10,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981') + 10,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)),
-         sharpeschoolhigh = map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
-                        data = .x,
-                        iter = c(4,4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)),
-         weibull = map(data, ~nls_multstart(rate~weibull_1995(temp = temp, a,topt,b,c),
-                        data = .x,
-                        iter = c(4,4,4,4),
-                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'weibull_1995') - 10,
-                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'weibull_1995') + 10,
-                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'weibull_1995'),
-                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'weibull_1995'),
-                        supp_errors = 'Y',
-                        convergence_count = FALSE)))
-
-glimpse(select(model_selection_fits, 1:10))
-
-# stack models
-model_stack <- select(model_selection_fits, -data) %>%
-  pivot_longer(., names_to = 'model_name', values_to = 'fit', boatman:weibull)
-
-# get parameters using tidy
-params <- model_stack %>%
-  mutate(., est = map(fit, tidy)) %>%
-  select(-fit) %>%
-  unnest(est)
-
-# get predictions using augment
-newdata <- tibble(temp = seq(min(respo.rates.tpc$temp), max(respo.rates.tpc$temp), length.out = 100))
-model_preds <- model_stack %>%
-  mutate(., preds = map(fit, augment, newdata = newdata)) %>%
-  select(-fit) %>%
-  unnest(preds)
-
-# seperating the curves for graphing seperate
-high_pH <- filter(respo.rates.tpc, pH_Treatment == "Ambient") 
-high_pH_model_preds <- filter(model_preds, pH_Treatment == "Ambient")
-low_pH <- filter(respo.rates.tpc, pH_Treatment == "Low") 
-low_pH_model_preds <- filter(model_preds, pH_Treatment == "Low")
-
-# take a random point from each model for labelling
-high_pH_model_labs <- filter(high_pH_model_preds, temp < 24) %>%
-  group_by(., model_name) %>%
-  sample_n(., 1) %>%
-  ungroup()
-
-# take a random point from each model for labelling
-low_pH_model_labs <- filter(low_pH_model_preds, temp < 24) %>%
-  group_by(., model_name) %>%
-  sample_n(., 1) %>%
-  ungroup()
-
-
-# plot
-ggplot(model_preds, aes(temp, rate, color = pH_Treatment)) +
-  geom_point(aes(temp, rate), respo.rates.tpc) +
-  geom_line(aes(temp, .fitted)) +
-  facet_wrap(~model_name, labeller = labeller(model_name = label_facets_num),
-             scales = 'free', ncol = 5) +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = 'none',
-        strip.text = element_text(hjust = 0),
-        strip.background = element_blank()) +
-  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), 
-                     name = "Treatment") +
-  labs(x = 'Temperature (ºC)',
-       y = 'Metabolic Rate',
-       title = 'Fits of TPC Models') +
-  geom_hline(aes(yintercept = 0), linetype = 2)
-
-# multiple models low pH plot
-ggplot(low_pH_model_preds, aes(temp, .fitted)) +
-  geom_line(aes(col = model_name)) +
-  geom_label_repel(aes(temp, .fitted, label = model_name, col = model_name), fill = 'white', nudge_y = 2, segment.size = 0.5, segment.colour = 'grey50', low_pH_model_labs) +
-  geom_point(aes(temp, rate), low_pH) +
-  theme_bw(base_size = 12) +
-  theme(legend.position = 'none') +
-  labs(x = 'Temperature (ºC)',
-       y = 'Metabolic rate',
-       title = 'rTPC Model Fits - low pH') +
-  geom_hline(aes(yintercept = 0), linetype = 2) +
-  scale_color_brewer(type = 'qual', palette = 2)
-
-# multiple models high pH plot
-ggplot(high_pH_model_preds, aes(temp, .fitted)) +
-  geom_line(aes(col = model_name)) +
-  geom_label_repel(aes(temp, .fitted, label = model_name, col = model_name), fill = 'white', nudge_y = 2, segment.size = 0.5, segment.colour = 'grey50', high_pH_model_labs) +
-  geom_point(aes(temp, rate), high_pH) +
-  theme_bw(base_size = 12) +
-  theme(legend.position = 'none') +
-  labs(x = 'Temperature (ºC)',
-       y = 'Metabolic rate',
-       title = 'rTPC Model Fits - high pH') +
-  geom_hline(aes(yintercept = 0), linetype = 2) +
-  scale_color_brewer(type = 'qual', palette = 2)
-
-```
-
-# Thermal Performance Curve Model Selection 
-
-```{r}
-
-model_aic <- model_stack %>%
-  mutate(., info = map(fit, glance),
-         AICc =  map_dbl(fit, MuMIn::AICc)) %>%
-  select(-fit) %>%
-  unnest(info) %>%
-  select(Treatment=pH_Treatment, model_name, sigma, AIC, AICc, BIC, df.residual)
-
-print(model_aic)
-
-# Find the best model across both pH_Treatment levels
-best_model <- model_aic %>%
-  group_by(Treatment) %>% 
-  filter(AICc == min(AICc)) %>%
-  pull(model_name, Treatment)
-
-# Print the best model
-print(best_model)
-
-# showing data in table format
-model_aic %>% 
-  group_by(model_name) %>% 
-  gt(rowname_col = "pH_Treatment") %>%
-  tab_header(title = md("**Thermal Performance Models Statistical Summaries**")) %>% 
-  gt_highlight_rows(rows = c(7,10), font_weight = "normal") 
-
-low_pH_best_model <- model_aic %>%
-  filter(Treatment == "Low") %>% 
-  filter(AICc == min(AICc)) %>%
-  pull(model_name)
-
-high_pH_best_model <- model_aic %>%
-  filter(Treatment == "Ambient") %>% 
-  filter(AICc == min(AICc)) %>%
-  pull(model_name)
-
-# get colour code
-col_best_mod = RColorBrewer::brewer.pal(n = 6, name = "Dark2")[6]
-
-# multiple models low pH plot (best fit curve)
-ggplot(low_pH_model_preds, aes(temp, .fitted)) +
-  geom_line(aes(group = model_name), col = 'grey50', alpha = 0.5) +
-  geom_line(data = filter(low_pH_model_preds, model_name==low_pH_best_model), col = col_best_mod) +
-  geom_label_repel(aes(temp, .fitted, label = model_name), fill = 'white', nudge_y = 0.8, segment.size = 0.2, segment.colour = 'grey50', data = filter(low_pH_model_labs, model_name == low_pH_best_model), col = col_best_mod) +
-  geom_point(aes(temp, rate), low_pH) +
-  theme_bw(base_size = 12) +
-  theme(legend.position = 'none') +
-  labs(x = 'Temperature (ºC)',
-       y = 'Metabolic rate',
-       title = 'rTPC Best Fit Model - low pH') +
-  geom_hline(aes(yintercept = 0), linetype = 2)
-
-# multiple models high pH plot
-ggplot(high_pH_model_preds, aes(temp, .fitted, color = pH_Treatment)) +
-  geom_line(aes(group = model_name), col = 'grey50', alpha = 0.5) +
-  geom_line(data = filter(high_pH_model_preds, model_name==high_pH_best_model), col = col_best_mod) +
-  geom_label_repel(aes(temp, .fitted, label = model_name), fill = 'white', nudge_y = 0.8, segment.size = 0.2, segment.colour = 'grey50', data = filter(high_pH_model_labs, model_name == high_pH_best_model), col = col_best_mod) +
-  geom_point(aes(temp, rate), high_pH) +
-  theme_bw(base_size = 12) +
-  theme(legend.position = 'none') +
-  labs(x = 'Temperature (ºC)',
-       y = 'Metabolic rate',
-       title = 'rTPC Best Fit Model - high pH') +
-  geom_hline(aes(yintercept = 0), linetype = 2)
-
-
-
-```
-
-Choose the Sharpe Schoolfield model(high) because it had the lowest AIC values for 7.7 and 8.0 pH, collectively and was a biological model used for ectotherms that fit the curve correctly. 
 
 
 #Respiration Thermal Performance Curves
@@ -1389,7 +955,7 @@ respo.rates.dataset <- joules.respo.rates.dataset
 
 #load in the data set and select for temperature, rate, and pH treatment
 respo.rates.tpc <- respo.rates.dataset %>% 
-  mutate(rate=umolO2.gram.hr.corrected, temp=Temp.C) %>%
+  mutate(rate=umolO2.gm.hr.corrected, temp=Temp.C) %>%
   dplyr::select(pH_Treatment, temp, rate)
 
 # Load in data and filter to keep just a single curve (low pH)
@@ -1816,16 +1382,22 @@ ggplot(TPC_parameters, aes(forcats::fct_relevel(Treatment), estimate, color = Tr
 # Sharpe School Field Thermal Performance Curve
 
 ```{r}
+
+respo.rates.tpc <- respo.rates.tpc %>% dplyr::select(rate, temp, pH_Treatment)
+
 # Load in data and filter to keep just a single curve (low pH)
 low.pH <- filter(respo.rates.tpc, pH_Treatment == 'Low')
-
 # Load in data and filter to keep just a single curve (high pH)
 high.pH <- filter(respo.rates.tpc, pH_Treatment == 'Ambient')
+
 
 # Sharpe-Schoolfield Thermal Performance Curves
 
 # Get start values and fit model for low pH
 start_vals_low <- get_start_vals(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981')
+upper_low <- get_upper_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981')
+lower_low <- get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981')
+
 
 # Fit the Sharpe-Schoolfield model for low pH
 sharpe_schoolfield_mod_low <- nls_multstart(
@@ -1834,8 +1406,8 @@ sharpe_schoolfield_mod_low <- nls_multstart(
   iter = c(3, 3, 3, 3),
   start_lower = start_vals_low - 10,
   start_upper = start_vals_low + 10,
-  lower = get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
   upper = get_upper_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
+  lower = get_lower_lims(low.pH$temp, low.pH$rate, model_name = 'sharpeschoolhigh_1981'),
   supp_errors = 'Y',
   control = nls.lm.control(maxiter=1000),
   convergence_count = FALSE
@@ -2218,3 +1790,193 @@ ggplot(sharpeschool_graph_TPC_parameters, aes(forcats::fct_relevel(Treatment), e
 ```
 
 
+```{r}
+
+joule.rates.dataset <- read_csv(here::here("Data", "Thinned_Respirometry_Data", "Joule.Rates.Dataset.csv"), show_col_types = FALSE) %>% 
+  mutate(Temp_Treatment = as.factor(Temp_Treatment),
+         pH_Treatment = as.factor(pH_Treatment)) %>% 
+  filter(pH_Treatment != "Sump")
+
+joule.rates.dataset <- joule.rates.datase  %>%
+  select(Snail_ID, Temp_Treatment, pH_Treatment, kcal.gram.hour, joules.gram.hour, Temp.C, Salinity, Pressure, Volume_mL, Tank_ID, mean_pH)
+
+# Perform a two-way ANOVA
+anova_result <- anova(lm(joules.gram.hour ~ Temp_Treatment * pH_Treatment, data = joule.rates.dataset))
+
+# Print the ANOVA table
+print(anova_result)
+# significant p value (1.101e-08 ***) for temp treatment but not for ph treatment (0.1235)
+
+# Perform a Tukey's HSD test
+tukey_result <- TukeyHSD(aov(joules.gram.hour ~ Temp_Treatment * pH_Treatment, data = joule.rates.dataset))
+
+# Print the Tukey's HSD test
+print(tukey_result)
+
+# joule rate summary statistics 
+joule.rates.summary <- joule.rates.dataset %>%
+  filter(pH_Treatment != "Sump") %>%
+  group_by(Temp_Treatment, pH_Treatment) %>%
+  summarize(
+    Mean_joule_sec = mean(joules.gram.hour),
+    Median_joules.gram.hour = median(joules.gram.hour),
+    Min_joules.gram.hour = min(joules.gram.hour),
+    Max_joules.gram.hour = max(joules.gram.hour),
+    SD_joules.gram.hour = sd(joules.gram.hour),
+    SE_joules.gram.hour = sd(joules.gram.hour) / sqrt(n()),
+    N_joules.gram.hour = n()
+  ) 
+  
+# Print the ANOVA table
+print(joule.rates.summary)
+
+mean_joule_sec <- joule.rates.summary %>%
+  group_by(Temp_Treatment,pH_Treatment) %>%
+  select(Temp_Treatment, pH_Treatment, Mean_joule_sec) 
+
+# Pivot the data to have Temp_Treatment as rows and pH_Treatment as columns
+pivot_mean_joule_sec <- pivot_wider(mean_joule_sec, names_from = pH_Treatment, values_from = Mean_joule_sec)
+
+# Calculate the percent difference
+difference_mean_joule_hr <- pivot_mean_joule_sec %>%
+  group_by(Temp_Treatment) %>%
+  mutate(Percent_Difference = (Ambient-Low)) %>% 
+   mutate(Percent_Difference = Percent_Difference/Low * 100) %>% 
+  mutate(Percent_Difference=paste0(Percent_Difference,"%"))
+
+# Rename columns
+colnames(difference_mean_joule_hr) <- c("Temperature Treatment", "Ambient Energy Expenditure (J g^−1 h^−1)", "Low Energy Expenditure (J g^−1 h^−1)", "Percent Difference")
+
+#  "Low" has a lower value than "Ambient," and the difference is expressed as a negative percentage of how much lower "Low" is compared to "Ambient." (this is without weight normalization)
+
+# Print the resulting data frame
+print(difference_mean_joule_hr)
+
+# Export the table
+write.csv(difference_mean_joule_hr, here::here("Output", "percent_difference_table.csv"), row.names = FALSE)
+```
+
+```{r}
+# Calculating Metablic Information from Respiration Rates 
+
+# Reading in carbonate data for analysis
+  Carb <- read_csv(here("Data", "Mesocosm_Data", "mesocosm_summary_table.csv")) %>% 
+    mutate(Temp_Treatment=Temp_Treatment, pH_Treatment=as.factor(pH_Treatment)) %>%
+    dplyr::select(Temp_Treatment, pH_Treatment, Mean_pH, Mean_TA, Mean_DO_mgL)
+
+  # Reading in data for analysis 
+  ambient.pH.respo <- respo.rates.dataset %>% 
+  filter(pH_Treatment == "Ambient") 
+  
+  ambient.pH.respo <- ambient.pH.respo %>% 
+    left_join(TA, by = join_by(Temp_Treatment, pH_Treatment)) 
+
+  # Calculating Q10 values for respiration rates
+  Ambient_pH_Q10 <- Q10(R_vec=ambient.pH.respo$umolO2.g.hr, T_vec=ambient.pH.respo$umolO2.g.hr, model = TRUE) #larger temperature sensitivity
+  
+  # Calculate the metabolic scaling coefficient
+  Ambient_pH_b <- calc_b(mass=ambient.pH.respo$Ash_Free_Dry_Weight, MO2=ambient.pH.respo$umolO2.g.hr, method = "nls", plot = "linear", b0_start = 1)
+
+  # Calculate E - the slope of the relationship between-ln(x) and 1/(kB T), where kB is the Boltzmann constant expressed in eV/K.
+  Ambient_pH_E <- calc_E(x=ambient.pH.respo$umolO2.g.hr, temp=ambient.pH.respo$Temp.C)
+  
+  # Respiratory Quotient ratio of CO2 produced to O2 consumed.
+  ambient_pH_RQ <- RQ(o2=ambient.pH.respo$umolO2.hr, o2_unit="umol_per_l", pH=ambient.pH.respo$Mean_pH, TA=ambient.pH.respo$Mean_TA,
+     temp=ambient.pH.respo$Temp.C, sal=ambient.pH.respo$Salinity, atm_pres=ambient.pH.respo$Pressure)
+  
+  # Predicts the pH of seawater after a defined amount of oxygen consumption. #80% O^2 % for the mean O^2 mgL at 26 degrees C
+  ambient_predicted_pH <- predict_pH(start_o2 = 100, end_o2 = 90, start_pH=7.9, temp=ambient.pH.respo$Temp.C, sal=ambient.pH.respo$Salinity, 
+                                 RQ = 1, TA = ambient.pH.respo$Mean_TA)
+
+  
+  # Used to Predict Biological Parameters
+  #adj_by_temp(meas_temp = ambient.pH.respo$Temp.C, meas_x = ambient.pH.respo$umolO2.gram.hr, temp_new = 23,
+              #method = "Q10", Q10 = Ambient_pH_Q10$Q10, E = Ambient_pH_E, show_coef = TRUE, plot_fit = TRUE)
+  
+  low.pH.respo <- respo.rates.dataset %>% 
+  filter(pH_Treatment == "Low") %>% 
+  left_join(TA, by = join_by(Temp_Treatment, pH_Treatment))
+
+  #calculating Q10 values for respiration rates
+  low_pH_Q10 <- Q10(R_vec=low.pH.respo$umolO2.g.hr, T_vec=low.pH.respo$umolO2.g.hr, model = TRUE) 
+  
+  #Calculate the metabolic scaling coefficient
+  low_pH_b <- calc_b(mass=low.pH.respo$Ash_Free_Dry_Weight, MO2=low.pH.respo$umolO2.g.hr, method = "nls", plot = "linear", b0_start = 1)
+
+  #Calculate E - the slope of the relationship between-ln(x) and 1/(kB T), where kB is the Boltzmann constant expressed in eV/K.
+  low_pH_E <- calc_E(x=low.pH.respo$umolO2.g.hr, temp=low.pH.respo$Temp.C)
+  
+  # Respiratory Quotient ratio of CO2 produced to O2 consumed.
+  low_pH_RQ <-RQ(o2=low.pH.respo$umolO2.hr, o2_unit="umol_per_l", pH=low.pH.respo$Mean_pH, TA=low.pH.respo$Mean_TA,
+     temp=low.pH.respo$Temp.C, sal=low.pH.respo$Salinity, atm_pres=low.pH.respo$Pressure)
+  
+  #Predicts the pH of seawater after a defined amount of oxygen consumption. #80% O^2 % for the mean O^2 mgL at 26 degrees C
+  low_predicted_pH <- predict_pH(start_o2 = 100, end_o2 = 90, start_pH=7.6, temp=low.pH.respo$Temp.C, sal=low.pH.respo$Salinity, 
+                                 RQ = 1, TA = low.pH.respo$Mean_TA)
+  
+  # Predict Biological Parameters 
+  #adj_by_temp(meas_temp = ambient.pH.respo$Temp.C, meas_x = ambient.pH.respo$umolO2.g.hr, temp_new = 23,
+              #method = "Q10", Q10 = low_pH_Q10$Q10, E = low_pH_E, show_coef = TRUE, plot_fit = TRUE)
+
+# Paine 1971 Q10 of 2.64 for all ambient temperatures, and an RQ of 0.85 
+
+# Example placeholders for your calculated values - replace these with your actual results
+ambient_pH_Q10_value <- Ambient_pH_Q10$Q10
+ambient_pH_b_value <- Ambient_pH_b$b
+ambient_pH_E_value <- Ambient_pH_E
+ambient_pH_RQ_value <- mean(ambient_pH_RQ)
+
+low_pH_Q10_value <- low_pH_Q10$Q10
+low_pH_b_value <- low_pH_b$b
+low_pH_E_value <- low_pH_E
+low_pH_RQ_value <- mean(low_pH_RQ)
+
+# Create a dataframe to store the values in a tabular format
+parameters_table <- data.frame(
+  Parameter = c("Q10", "Metabolic Scaling Coefficient b", "E", "Respiratory Quotient (RQ)"),
+  Ambient_pH = c(ambient_pH_Q10_value, ambient_pH_b_value, ambient_pH_E_value, ambient_pH_RQ_value),
+  Low_pH = c(low_pH_Q10_value, low_pH_b_value, low_pH_E_value, low_pH_RQ_value)
+)
+
+# Print the table
+print(parameters_table)
+write_csv(parameters_table, here("Output", "Metabolic_Parameters.csv"))
+```
+
+
+```{r}
+
+# Reading in the metabolic parameters data
+parameters_table <- read_csv(here("Output", "Metabolic_Parameters.csv"))
+
+# Let's assume we want to perform an ANOVA to test if there are significant differences 
+# between the ambient and low pH treatments for each parameter.
+
+# Melting the data for ANOVA
+parameters_long <- parameters_table %>%
+  pivot_longer(cols = -Parameter, names_to = "Treatment", values_to = "Value")
+
+# Performing ANOVA for each parameter
+anova_results <- parameters_long %>%
+  group_by(Parameter) %>%
+  do(tidy(aov(Value ~ Treatment, data = .)))
+
+# Viewing the results
+print(anova_results)
+
+# calculate estimated parameters
+params <- d_stack %>%
+  mutate(., params = map(fit, calc_params)) %>%
+  select(-fit) %>%
+  unnest(params)
+
+# get averaged parameters based on model weights
+ave_params <- left_join(params, select(d_ic, model_name, weight)) %>%
+  summarise(., across(rmax:skewness, function(x){sum(x*.$weight)})) %>%
+  mutate(model_name = 'model average')
+#> Joining with `by = join_by(model_name)`
+
+# show them
+bind_rows(select(params, model_name, rmax:skewness), ave_params) %>%
+  mutate_if(is.numeric, round, 2)
+```

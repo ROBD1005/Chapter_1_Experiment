@@ -1,0 +1,2954 @@
+---
+title: "Masters Thesis Full"
+author: "R.J. Dellinger"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Loading Libraries 
+
+```{r setup, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Data manipulation and general utilities
+library(broom)
+library(car)
+library(dplyr)
+library(gt)
+library(gtExtras)
+library(lubridate)
+library(magick)
+library(measurements)
+library(nls.multstart)
+library(nlstools)
+library(performance)
+library(png)
+library(tidyr)       
+
+# Plotting and visualization
+library(cowplot)
+library(ggfx)
+library(ggimage)
+library(gginnards)
+library(ggmap)
+library(ggmapinset)
+library(ggplot2)
+library(ggrepel)
+library(ggspatial)
+library(ggstatsplot)
+library(gridExtra)
+library(hrbrthemes)
+library(latex2exp)
+library(patchwork)
+
+# Geospatial data handling
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(rnaturalearthhires)
+library(raster)
+library(sf)
+library(lwgeom)
+
+# Statistical analysis and modeling
+library(boot)
+library(minpack.lm)
+library(respR)
+library(respirometry)
+library(rTPC)
+library(zoo)
+library(LoLinR)
+library(NISTunits)
+
+#https://docs.r4photobiology.info/ggpmisc/
+  #https://rpkgs.datanovia.com/ggpubr/
+  #https://nanx.me/ggsci/reference/pal_npg.html
+#https://www.mosaic-web.org/ggformula/
+  
+```
+
+# Thermal Performance Schematic (using generated data with quadratic equations to illustrate hypothesis)
+
+```{r, Thermal Performance Schematic, warning=FALSE, message=FALSE}
+# Extend the temperature values from 0 to 32
+temperatures <- seq(0, 32, by = 1)
+
+peak_rate_low=150
+metabolic_rate_low <- ifelse(temperatures <= 16, 
+                             (peak_rate_low / 80) * (4 * temperatures - (temperatures^2 / 18)),  
+                             ifelse(temperatures <= 19,  # Starting the decline earlier and ending it sooner at 19°C
+                                    peak_rate_low - 5 * (peak_rate_low / 60) * (temperatures - 16)^2.5,  # Steeper and quicker decline
+                                    24))  # Set to 24 after 19°C
+
+# Convert to tibble for low pH
+metabolic_rate_low <- tibble(temp = temperatures, rate = metabolic_rate_low, curve_id = "low")
+
+peak_rate_high=80
+# High pH curve with adjustments at the ends
+metabolic_rate_ambient <- ifelse(temperatures <= 22, 
+                                 (peak_rate_high / 100) * (5 * temperatures - (temperatures^2 / 22)), 
+                                 ifelse(temperatures <= 27, 
+                                        peak_rate_high - ((temperatures - 22) / (27 - 22)) * (peak_rate_high - 40), 
+                                        10))  # Set to 0 after 27°C
+
+# Convert to tibble for high pH
+metabolic_rate_ambient <- tibble(temp = temperatures, rate = metabolic_rate_ambient, curve_id = "high")
+
+# Combine both data frames
+df_tpc <- bind_rows(metabolic_rate_ambient, metabolic_rate_low)
+
+high_data <- subset(df_tpc, curve_id == "high")
+
+# get start vals
+high_start_vals <- get_start_vals(high_data$temp, high_data$rate, model_name = 'sharpeschoolhigh_1981')
+# get limits
+high_low_lims <- get_lower_lims(high_data$temp, high_data$rate, model_name = 'sharpeschoolhigh_1981')
+high_upper_lims <- get_upper_lims(high_data$temp, high_data$rate, model_name = 'sharpeschoolhigh_1981')
+
+# fit model
+high_fit <- nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                                                     data = high_data,
+                                                     iter = 1,
+                                                     start_lower = high_start_vals,
+                                                     start_upper = high_start_vals,
+                                                     lower = high_low_lims,
+                                                     upper = high_upper_lims,
+                                                     supp_errors = 'Y')
+# predict new data
+high_new_data <- data.frame(temp = seq(min(high_data$temp), max(high_data$temp), 0.5))
+high_preds <- augment(high_fit, newdata = high_new_data)
+
+low_data <- subset(df_tpc, curve_id == "low")
+# get start vals
+low_start_vals <- get_start_vals(low_data$temp, low_data$rate, model_name = 'sharpeschoolhigh_1981')
+# get limits
+low_low_lims <- get_lower_lims(low_data$temp, low_data$rate, model_name = 'sharpeschoolhigh_1981')
+low_upper_lims <- get_upper_lims(low_data$temp, low_data$rate, model_name = 'sharpeschoolhigh_1981')
+
+# fit model
+low_fit <- nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                                                     data = low_data,
+                                                     iter = 1,
+                                                     start_lower = low_start_vals,
+                                                     start_upper = low_start_vals,
+                                                     lower = low_low_lims,
+                                                     upper = low_upper_lims,
+                                                     supp_errors = 'Y')
+
+# predict new data
+low_new_data <- data.frame(temp = seq(min(low_data$temp), max(low_data$temp), 0.5))
+low_preds <- augment(low_fit, newdata = low_new_data)
+
+# calculate topt
+low_topt <- get_topt(low_fit)
+high_topt <- get_topt(high_fit)
+# Calculate the highest point of each curve
+low_rmax <- get_rmax(low_fit)
+high_rmax <- get_rmax(high_fit)
+# calculate ct max and min 
+low_ctmax <- get_ctmax(low_fit)
+high_ctmax <- get_ctmax(high_fit)
+low_ctmin <- get_ctmin(low_fit)
+high_ctmin <- get_ctmin(high_fit)
+# calculate thermal breadth range
+low_tbr <- get_breadth(low_fit)
+high_tbr <- get_breadth(high_fit)
+
+# plotting tbr calculation 
+# Calculate 80% of the peak rate
+rmax_80 <- 0.8 * high_rmax
+# Filter the temperatures at or above 80% of the maximum rate
+temp_at_80pct <- high_preds$temp[high_preds$.fitted >= rmax_80]
+# Determine the minimum and maximum temperatures of this range
+tbr_temp_range <- range(temp_at_80pct)
+middle_point_high <- mean(tbr_temp_range) # for plotting label 
+
+# thermal breadt hfor low ph
+low_rmax_80 <- 0.8 * low_rmax
+temp_at_80pct_low <- low_preds$temp[low_preds$.fitted >= low_rmax_80]
+tbr_temp_range_low <- range(temp_at_80pct_low)
+
+# Create a tibble with a single fake point for temp color bar
+temp_data <- tibble(x = 32, y = 1, diff = 0)
+
+# Define the coordinates for the key square
+square_data <- data.frame(
+  xmin = 26.5,
+  xmax = 28,
+  ymin = 97,
+  ymax = 100
+)
+
+low_preds <- low_preds %>%
+  filter(temp <= 24)
+
+TPC_schematic <- ggplot() +
+  geom_point(data = temp_data, aes(x = x, y = y, fill = diff), color = "black", size=1, alpha=.01) +
+  #plotting the low curve first 
+  geom_line(data = low_preds, aes(temp, .fitted, color = "low"), size = 1, col = 'cyan3') +     # Low metabolic rate curve
+  geom_segment(aes(x = low_topt[1], y = 5, xend = low_topt[1], yend = low_rmax[1]), linetype = "dashed", col = 'cyan3', size=0.5) + 
+  geom_segment(aes(x=0, y=low_rmax[1], xend = low_topt[1], yend = low_rmax[1]), linetype = "dashed", col = 'cyan3', size=0.5) +
+  geom_segment(aes(x=tbr_temp_range_low[1]+0.25, y = low_rmax[1]*0.8, xend = tbr_temp_range_low[2], yend = low_rmax[1]*0.8), 
+               linetype = "dotted", color = "cyan3", size = 0.5)+
+  #plotting ct max and min for the ambient curve above the low curve 
+  geom_segment(aes(x = high_ctmax-3, y = 5, xend = high_ctmax-3, yend = high_rmax[1]* 0.175), linetype = "dotted", col = 'black') +
+  geom_segment(aes(x = high_ctmax-3, y = high_rmax[1]* 0.35, xend = high_ctmax-3, yend = high_rmax[1]* 0.225), 
+               arrow = arrow(type = "closed", length = unit(0.1, "inches")), color = "black", size = 0.5) + 
+  geom_text(aes(x =  high_ctmax-3, y = high_rmax[1]*0.4), label = TeX("$CT_{max}$"), size=5, color = "black", family = "serif") +  # Label for CTmax 
+  geom_segment(aes(x=1, y=5, xend = 1, yend = high_rmax[1]*0.175), linetype = "dotted", col = 'black') +
+  geom_segment(aes(x = 1, y = high_rmax[1]*0.35, xend = 1, yend = high_rmax[1]*0.225), 
+               arrow = arrow(type = "closed", length = unit(0.1, "inches")), color = "black", size = 0.5) +
+  geom_text(aes(x = 1, y = high_rmax[1]*0.4), label = TeX("$CT_{min}$"), size=5, color = "black", family = "serif") +  # Label for CTmin
+  #plotting the ambient curve 
+  geom_line(data = high_preds, aes(temp, .fitted, color = "high"), size = 1, col = 'darkorange') + # High metabolic rate curve
+  geom_segment(aes(x = high_topt[1], y = 5, xend = high_topt[1], yend = high_rmax[1]), linetype = "dashed", col = 'darkorange1', size=0.5)+  # Thermal Opt Line
+  geom_segment(aes(x=0, y=high_rmax[1], xend = high_topt[1], yend = high_rmax[1]), linetype = "dashed", col = 'darkorange1', size=0.5) +
+  geom_text(aes(x = 1, y = high_rmax[1]), label = TeX("$R_{max}$"), size=5, vjust = -0.5, color = "black", family = "serif") +
+  geom_text(aes(x = high_topt[1], y = high_rmax[1]), label = TeX("$T_{opt}$"), size=5, vjust = -0.5, color = "black", family = "serif") +  # Label for Thermal Optimum
+  geom_segment(aes(x = tbr_temp_range[1]+0.25, y = high_rmax[1]*0.8, xend = tbr_temp_range[2]-0.15, yend = high_rmax[1]*0.8), 
+               linetype = "dotted", color = "black", size = 0.5, arrow = arrow(type = "closed", length = unit(0.15, "inches"), ends = "both"))+
+  geom_text(aes(x = middle_point_high[1], y = high_rmax[1]* 0.8), label = TeX("$T_{br}$"), size=5, vjust = 1.3, hjust=0.8, color = "black", family = "serif") +
+  geom_segment(aes(x = high_topt-6, xend = high_topt-3, y = high_rmax[1]*0.76, yend = high_rmax[1]*0.95), 
+                 arrow = arrow(length = unit(0.3, "cm")), color = "black") +  # Representing Ea
+  geom_text(aes(x = high_topt-5, y = high_rmax[1] * 0.925), label = TeX("$E_{a}$"), size=5, color = "black", family = "serif") +
+  geom_segment(aes(x = high_topt+3, xend = high_topt+5, y = high_rmax[1]*0.88, yend = high_rmax[1]*0.6), 
+                 arrow = arrow(length = unit(0.3, "cm")), color = "black") +
+  geom_text(aes(x = high_topt+4.5, y = high_rmax[1] * 0.825), label = TeX("$E_{h}$"), size=5, color = "black", family = "serif") +
+geom_segment(aes(y= 5, yend=5, x=0, xend=36), linetype = "dashed", color = "black", linewidth=1) +  # Dotted line at y = 0
+#geom_hline(yintercept = 5, linetype = "dashed", color = "black", linewidth=1) +  # Dotted line at y = 0
+scale_fill_distiller(palette = "YlOrRd", limits = c(0, 26), guide = guide_colorbar(title = bquote("Temperature ("*degree*C*")"), title.position = "bottom", ticks.colour = NA), direction=1) +
+scale_color_manual(values = c("darkorange", "cyan3"), 
+                     labels = c("Ambient pH", "Decreased pH"), guide = FALSE) +
+theme_minimal() +  # Start with a minimal theme
+  labs(x=NULL, y = "Respiration Rate") +  # Add y-axis label
+  theme(plot.background = element_blank(),  # Remove background elements
+        panel.background = element_blank(),  # Remove panel background elements
+        axis.line = element_line(arrow = arrow(type = "closed", length = unit(0.2, "inches")), size = 1, color="black"),
+        panel.border = element_blank(),
+        axis.title.x = element_blank(),  # Remove x-axis title
+        axis.title.y = element_text(size = rel(1.5), family="serif"),
+        axis.text = element_blank(),
+        axis.text.x = element_blank(),  # Optional: Remove x-axis text if desired
+        axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        text=element_text(size=12, family="serif"),
+        legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.key = element_blank(),
+        legend.key.width = unit(0.17, "npc"),
+        legend.key.height = unit(5, "mm"),
+        legend.title = element_text(hjust = 0.5, size = rel(1.5), family="serif"),  # Apply serif font to legend title
+        legend.text = element_blank(),  # Apply serif font to legend text
+        plot.margin = margin(0.3, 0.3, 0.3, 0.3, "cm"),
+        plot.title = element_text(family="serif")) + # Apply serif font to the plot title if you have one
+  xlim(0, 36) +  # Set x-axis limits
+    geom_rect(data = square_data, aes(xmin = xmin, xmax = xmax, ymin = ymin-2.5, ymax = ymax-2.5), 
+            fill = "darkorange", color = "darkorange") +
+  geom_rect(data = square_data, aes(xmin = xmin, xmax = xmax, ymin = ymin-10.5, ymax = ymax-10.5), 
+            fill = "cyan3", color = "cyan3") + 
+  geom_rect(data = square_data, aes(xmin = xmin-1, xmax = xmax+7.5, ymin = ymin-14, ymax = ymax+1),
+            fill = NA, color = "black", size = 0.5) + # This will draw the border around the square
+  annotate("text", x = square_data$xmax+3.1, y = square_data$ymax-3.75, family = "serif", label = "Ambient pH", size=4.5, color = "black") +
+  annotate("text", x = square_data$xmax+3.65, y = square_data$ymax-11.75, family = "serif", label = "Decreased pH", size=4.5, color = "black")
+
+print(TPC_schematic)
+
+ggsave("TPC_schematic.png", plot = TPC_schematic, width = 8, height = 6, dpi = 1300)
+
+```
+
+
+
+```{r Clearing Environment, message=FALSE, include=FALSE} 
+# Clear the environment
+rm(list = ls())
+```
+
+## Creating Study Site Map 
+
+```{r, Creating Study Site Map, warning =FALSE, message=FALSE}
+
+# Define study site coordinates and labels
+center_lon <- -118.28599
+center_lat <- 33.70679092
+location <-  "(Point Fermin State Beach, CA)"
+
+# Define regional area
+regional_lonlim <- c(-126, -114)
+regional_latlim <- c(28, 44)
+
+# Expand the limits by on each side
+studysite_lonlim <- c(floor(center_lon)-0.5, ceiling(center_lon)+0.5)
+studysite_latlim <- c(floor(center_lat)-0.5, ceiling(center_lat)+0.5)
+
+# Define bounding box coordinates for the west coast 
+regional_bbox <- st_bbox(c(xmin = regional_lonlim[1], ymin = regional_latlim[1], 
+                         xmax = regional_lonlim[2], ymax = regional_latlim[2]), crs = st_crs(4326)) 
+# create a bounding box polygon
+regional_polygon <- st_as_sfc(regional_bbox)
+
+# Define the bounding box as an sf object for the study site
+studysite_bbox <- st_bbox(c(xmin = studysite_lonlim[1], ymin = studysite_latlim[1], 
+                         xmax = studysite_lonlim[2], ymax = studysite_latlim[2]), crs = st_crs(4326))
+studysite_polygon <- st_as_sfc(studysite_bbox)
+
+# Loading data  for regional and study site maps  
+sf_use_s2(FALSE) # to fix sf error)
+
+# loading land data, repairing invalid geometries and subsetting to map bounding box
+land <- ne_countries(scale = 10, returnclass = "sf")
+land_data <- land[c("geometry", "continent", "name")] %>%  mutate(type = "Land", type2= "Boundary", label=name, .keep="unused")
+land_data_valid <- st_is_valid(land_data, NA_on_exception = TRUE) 
+if (any(is.na(land_data_valid) | !land_data_valid)) {
+  land_data <- st_make_valid(land_data)}
+regional_land_data <- st_intersection(land_data, regional_polygon)
+
+# loading coastline data, repairing invalid geometries and subsetting to map bounding box
+coastlines <- ne_coastline(scale = 10, returnclass = "sf")
+coastline_data <- coastlines["geometry"] %>% mutate(type = "Land", type2= "Boundary")
+coastline_data_valid <- st_is_valid(coastline_data, NA_on_exception = TRUE)
+if (any(is.na(coastline_data_valid) | !coastline_data_valid)) {
+  coastline_data <- st_make_valid(coastline_data)}
+regional_coastline_data <- st_intersection(coastline_data, regional_polygon)
+
+# loading rivers data, repairing invalid geometries and subsetting to map bounding box
+rivers <- ne_download(scale = 10, type = "rivers_lake_centerlines", category = "physical", returnclass = "sf")
+rivers_data <- rivers[c("geometry", "rivernum", "label")] %>% mutate(type = "Water", type2="Boundary")
+rivers_data_valid <- st_is_valid(rivers_data, NA_on_exception = TRUE)
+if (any(is.na(rivers_data_valid) | !rivers_data_valid)) {
+  rivers_data <- st_make_valid(rivers_data)}
+regional_rivers_data <- st_intersection(rivers_data, regional_polygon)
+
+# loading lakes data, repairing invalid geometries and subsetting to map bounding box
+lakes <- ne_download(scale = 10, type = "lakes", category = "physical", returnclass = "sf")
+lakes_data <- lakes[c("geometry", "label")] %>% mutate(type = "Water", type2="Boundary") 
+lakes_data_valid <- st_is_valid(lakes_data, NA_on_exception = TRUE)
+if (any(is.na(lakes_data_valid) | !lakes_data_valid)) {
+  lakes_data <- st_make_valid(lakes_data)}
+regional_lakes_data <- st_intersection(lakes_data, regional_polygon)
+
+#getting high resolution study site data 
+studysite_land_data <- st_as_sf(getData('GADM', country='USA', level=0), crs=st_crs(4326)) %>%
+  st_intersection(studysite_polygon, dimension="polygon") %>% mutate(type = "Land", type2= "Boundary")
+studysite_coastline_data <- st_boundary(studysite_land_data)
+
+# create the point and text for the study site (in the same coordinate system as the map)
+study_site <- st_sfc(st_point(c(center_lon, center_lat)), crs = st_crs(4326))
+study_site_text <- st_sfc(st_point(c(center_lon, center_lat*1.005)), crs = st_crs(4326)) %>% # nudge up
+  st_sf(data.frame(location = location), crs = st_crs(4326))
+study_site_text_2 <- st_sfc(st_point(c(center_lon, center_lat*1.0075)), crs = st_crs(4326)) %>% # nudge up
+  st_sf(data.frame(location = "STUDY SITE"), crs = st_crs(4326))
+
+# Download and process ocean labels
+ocean_labels <- ne_download(type = "geography_marine_polys", category = "physical", scale = 10) %>% 
+  st_transform(crs = 4326) %>% 
+  st_intersection(regional_polygon) %>%
+  st_centroid() %>%
+  dplyr::select(label, name_en, geometry)
+
+# Download and process geography labels
+geography_labels <- ne_download(type = "geography_regions_polys", category = "physical", scale = 10) %>% 
+  st_transform(crs = 4326) %>% 
+  st_intersection(regional_polygon) %>%
+  st_centroid() %>%
+  dplyr::mutate(label = LABEL, name_en=NAME_EN) %>%
+  dplyr::select(label, name_en, geometry)
+
+# Combine and categorize labels
+all_labels <- rbind(ocean_labels, geography_labels) %>%
+  mutate(is_capitalized = toupper(label) == label) %>% 
+  mutate(label = ifelse(is_capitalized == FALSE, name_en, label)) %>% 
+  dplyr::select(-name_en)
+
+pacific_ocean_index <- which(all_labels$label == "NORTH PACIFIC OCEAN")
+all_labels$geometry[pacific_ocean_index] <- st_sfc(st_point(c(st_coordinates(all_labels[pacific_ocean_index, ])[1, 1] - 2, 
+                                                              st_coordinates(all_labels[pacific_ocean_index, ])[1, 2] + 2)), 
+                                                   crs = st_crs(all_labels))
+
+continental_labels <- which(all_labels$label == "NORTH AMERICA" | all_labels$label == "NORTH PACIFIC OCEAN")
+continental_labels <- all_labels[continental_labels, ] %>% 
+  mutate(label = case_when(label == "NORTH AMERICA" ~ "NORTH\nAMERICA",
+                          label == "NORTH PACIFIC OCEAN" ~ "NORTH\nPACIFIC OCEAN"))
+
+inset_labels <- which(all_labels$label == "Channel Islands of California")
+inset_labels <- all_labels[inset_labels, ] %>% 
+  mutate(label = "Channel\nIslands")
+
+# Filter out the "ROCKY MOUNTAINS" label
+all_labels <- filter(all_labels, label != "ROCKY MOUNTAINS" & label != "NORTH AMERICA"
+                     & label != "NORTH PACIFIC OCEAN" & label != "Channel Islands of California")
+
+all_labels <- all_labels %>%
+  mutate(label = str_replace_all(label, " ", "\n"))
+
+
+# Create a regional map with an inset study site
+study_site_map <- ggplot() +
+  # mapping the regional background data to create boundaries for the map
+  #geom_sf(regional_background, mapping=aes(fill=type, color=type), linewidth = 0.2) +
+  
+  # mapping the regional land and coastline data to create the land area and boundaries
+  geom_sf(regional_land_data, mapping=aes(fill=type, color=type), linewidth = 0.2) +
+  geom_sf(regional_coastline_data, mapping=aes(color=type2, fill=type2), linewidth = 0.1, alpha=0.8) +
+  
+    #shading the overlays to add a 3 dimensional look 
+  geom_sf(regional_coastline_data, mapping=aes(color=type2),
+          fill=NA, color = "darkolivegreen", linewidth = 1, alpha = 0.05) + 
+  geom_sf(regional_coastline_data, mapping=aes(color=type2), fill=NA, color = "darkolivegreen", linewidth = 3, alpha = 0.05) +
+  geom_sf(regional_lakes_data, mapping=aes(color=type2),
+          fill = NA, color="darkolivegreen", size=1.2, linewidth=0.15, alpha=0.05) + 
+  geom_sf(regional_rivers_data, mapping=aes(color=type2),
+          fill = NA, color="darkolivegreen", size=1.2, linewidth=0.5, alpha=0.75) +
+  geom_sf(regional_rivers_data, mapping=aes(color=type2),
+          fill=NA, color = "darkolivegreen", size=1.2, linewidth=1, alpha=0.05) + 
+  geom_sf(regional_rivers_data, mapping=aes(color=type2),
+          fill=NA, color = "darkolivegreen", size=1.2, linewidth=2, alpha=0.05) +
+  geom_sf(regional_rivers_data, mapping=aes(color=type2),
+          fill=NA, color = "darkolivegreen3", size=1.2, linewidth=1.5, alpha=0.05) +
+  geom_sf(regional_coastline_data, mapping=aes(color=type), fill=NA, color = "darkolivegreen3", linewidth = 1.5, alpha = 0.05) +
+  geom_sf(regional_rivers_data, mapping=aes(color=type),
+          fill=NA, color = "white", size=1.5, linewidth=0.5, alpha=0.05) +
+  geom_sf(regional_coastline_data, mapping=aes(color=type),
+          fill=NA, color = "white", linewidth = 1.5, alpha = 0.05) +
+  geom_sf(regional_coastline_data, mapping=aes(color=type),
+          fill=NA, color = "grey20", size=1.5, linewidth=0.075, alpha=0.05) +
+  
+  # mapping the regional rivers and lakes data with shading (shading first then overlaying river and and lakes)
+  geom_sf(regional_rivers_data, mapping=aes(color=type, fill=type), size=0.8, linewidth=0.4) + #inserting rivers
+  geom_sf(regional_lakes_data, mapping=aes(color=type, fill=type), size=0.8, linewidth=0.1) + #inserting lakes
+
+  # Adding labels with conditional styling, size, and nudging
+  geom_sf_text(data = all_labels, mapping = aes(geometry = geometry, label = label, 
+                                              fontface = ifelse(is_capitalized, "bold", "italic")),
+             family = "serif", 
+             size = ifelse(all_labels$is_capitalized, 1.5,  1.8),  # Larger size for capitalized
+             color = "black", 
+             check_overlap = TRUE, 
+             nudge_x = ifelse(all_labels$is_capitalized, 0.5, 0),  # More nudge for capitalized
+             nudge_y = ifelse(all_labels$is_capitalized, 0.1, 0)) + # More nudge for capitalized
+  geom_sf_text(data= continental_labels, mapping = aes(geometry = geometry, label = label), family = "serif", 
+              fontface="bold", size = 2.5, color = "black", check_overlap = TRUE, nudge_x = 1) +
+  geom_sf_text(data= inset_labels, mapping = aes(geometry = geometry, label = label), family = "serif",
+              fontface = "italic", size = 1.5, color = "black", check_overlap = TRUE, nudge_x = 0.5, nudge_y=-0.75) +
+  
+  # adding geom sf insets to create the inset plot 
+  geom_inset_frame(target.aes = list(fill = "cyan3")) +
+  geom_sf_inset(studysite_land_data, mapping=aes(fill=type), color=NA, linewidth = 0.1, map_base = "none") +
+  geom_sf_inset(studysite_coastline_data, mapping=aes(color=type2),
+                fill=NA, linewidth = 0.15, alpha = 0.3, map_base = "none") +
+  geom_sf_inset(studysite_coastline_data, mapping=aes(color=type),
+                fill=NA, color = "darkolivegreen", size=0.8, linewidth = 1, alpha = 0.05, map_base = "none") +
+  geom_sf_inset(studysite_coastline_data, mapping=aes(color=type),
+                fill=NA, color = "darkolivegreen", size=0.8, linewidth = 3, alpha = 0.05, map_base = "none") +
+  geom_sf_inset(studysite_coastline_data, mapping=aes(color=type),
+                fill=NA, color = "darkolivegreen3", size=0.8, linewidth = 2, alpha = 0.05, map_base = "none") +
+  geom_sf_inset(studysite_coastline_data, mapping=aes(color=type),
+                fill=NA, color = "white", size=0.6, linewidth = 0.5, alpha = 0.05, map_base = "none") +
+  geom_sf_inset(studysite_coastline_data, mapping=aes(color=type),
+                fill=NA, color = "grey20", size=1,linewidth = 0.075, alpha = 0.05, map_base = "none") +
+  #insert study site point 
+  geom_sf_text_inset(study_site_text_2, label = "STUDY SITE", mapping = aes(), size = 3, 
+                  color = 'black', family = "serif",
+                  fontface="bold", map_base="none", y_nudge = -1) +
+  geom_sf_text_inset(study_site_text, label = location, mapping = aes(), size = 2, 
+                  color = 'black', family = "serif",
+                  fontface="bold", map_base="none", y_nudge = 1) +
+  geom_sf_inset(study_site, mapping=aes(), color="orange", size=0.75, map_base = "none") +
+  geom_inset_frame()+
+  geom_rect(data = data.frame(), aes(xmin = regional_lonlim[1], xmax = regional_lonlim[2],
+  ymin = regional_latlim[1], ymax = regional_latlim[2]), fill = NA, colour = "grey20", size=1.2, linewidthe=0.2) +
+  coord_sf_inset(inset = configure_inset(centre = study_site, scale = 5, units = "km",
+                                         translation = c(-360, -280), radius = 60), expand=FALSE, clip="on")  +
+  scale_fill_manual(values = c("Land" = "darkolivegreen3", "Boundary" = "#6B8E23", "Water" = "cyan3")) +
+  scale_color_manual(values = c("Land" = "darkolivegreen3", "Boundary" = "#6B8E23", "Water" = "cyan3")) +
+  scale_x_continuous(breaks = seq(st_bbox(regional_bbox)["xmin"], st_bbox(regional_bbox)["xmax"], by = 4),
+                     limits = c(st_bbox(regional_bbox)["xmin"], st_bbox(regional_bbox)["xmax"])) +
+  scale_y_continuous(breaks = seq(st_bbox(regional_bbox)["ymin"], st_bbox(regional_bbox)["ymax"], by = 4),
+                     limits = c(st_bbox(regional_bbox)["ymin"], st_bbox(regional_bbox)["ymax"])) +
+  xlab("Longitude") + ylab("Latitude") +
+  theme_minimal(base_family="serif") +
+  theme(plot.background = element_rect(fill = "white", colour = "white"),
+    panel.background= element_rect(fill="cyan3"), panel.grid = element_blank(), panel.border = element_blank(),
+    legend.position = "none", panel.grid.major = element_line(color = gray(0.5), linetype = "dashed", size = 0.25),
+    axis.title.x = element_text(margin = margin(t = 10), size = 12, hjust = 0.5, family="serif"),
+    axis.title.y = element_text(margin = margin(r = 10), size = 12, vjust = 0.5, family="serif"),  # Same size for both axes
+    axis.text = element_text(size = 10, family="serif"),
+    plot.margin = margin(t = 1, r = 1, b = 1, l = 1, unit = "cm")) +
+  #spatial aware north arrow placement and specification
+  annotation_north_arrow(location = "tr", pad_y = unit(0.35, "cm"), pad_x = unit(0.3, "cm"),
+                         width=unit(0.6, "cm"), height = unit(0.8, "cm"), which_north = "grid",
+                         style = north_arrow_fancy_orienteering(text_family = "serif", text_size=8,
+                         text_col="grey20", fill=c("grey20", "white"))) +
+   # spatial-aware automagic scale bar
+  annotation_scale(location = "br", style="ticks", height = unit(0.15, "cm"), text_family = "serif", pad_x = unit(0.4, "cm")) 
+
+print(study_site_map)
+
+# Save the plot
+ggsave(filename = here("Figures", "study_site_map.png"), plot = study_site_map, width = 4.5, height = 6, dpi = 1600)
+```
+
+## setting up commong theme for plotting for the remainder of the script
+
+```{r}
+# plot themes for ggplot
+common_theme <- theme_minimal(base_family="serif") +
+  theme(
+    plot.background = element_rect(fill = "white", colour = "white"),  # Set the background to white
+    text = element_text(family = "serif", color="black"),
+    legend.position = 'none',
+    strip.text = element_text(hjust = 0.5, size = 12, family = "serif"), 
+    strip.text.x = element_text(vjust = 0.5, size = 12, family = "serif"), 
+    strip.text.y = element_text(vjust = 0.5, size = 12, family = "serif"), 
+    axis.title.x = element_text(margin = margin(t = 10), size = 14, hjust = 0.5, family = "serif"),
+    axis.title.y = element_text(margin = margin(r = 10), size = 14, vjust = 0.5, family = "serif"),  # Same size for both axes
+    axis.text = element_text(size = 10, family = "serif"),  # Same size for both axes
+    plot.title = element_text(hjust = 0.5, size = 14, family = "serif"),
+    plot.margin = margin(t = 1, r = 1, b = 1, l = 1, unit = "cm")
+  )
+```
+
+
+# Analyzing Study Site Environmental Data
+
+# Temperature Histogram 
+
+
+## Open Water SST and pH for a nearby site (Newport Beach Pier)
+
+### Temperature & pH Data from UCSD Shore Stations 1924-2023
+ 
+Carter, Melissa L.; Flick, Reinhard E.; Terrill, Eric; Beckhaus, Elena C.; Martin, Kayla; Fey, Connie L.; Walker, Patricia W.; Largier, John L.; McGowan, John A. (2022). Shore Stations Program, Newport Beach - Balboa Pier. In Shore Stations Program Data Archive: Current and Historical Coastal Ocean Temperature and Salinity Measurements from California Stations. UC San Diego Library Digital Collections. https://doi.org/10.6075/J0GX4BCP
+
+Temperature and pH data provided by the Shore Stations Program sponsored at Scripps Institution of Oceanography by California Department of Parks and Recreation, Natural Resources Division,  Award# C1670003, and pH data provided by the Southern California Coastal Ocean Observing System.
+
+## Temperature Distribution Data
+
+```{r Temperature Data, message=FALSE, warning=FALSE}
+# Read the CSV file
+newport_temp <- read_csv(here("Data", "Site_Data", "NewportBeach_TEMP_1924-2023.csv"))
+
+# Data Cleaning and Transformation
+# Filter data based on TEMP_FLAG and SURF_TEMP_C values, then create a Date column
+newport_temp_data <- newport_temp %>%
+  filter(is.na(TEMP_FLAG) | TEMP_FLAG %in% c(0, 5, 6)) %>%
+  filter(between(SURF_TEMP_C, 5, 35)) %>%
+  mutate(Date = make_date(YEAR, MONTH, DAY)) %>%
+  dplyr::select(Date, Temperature = SURF_TEMP_C)
+
+filtered_temp_data <- newport_temp_data %>% 
+   dplyr::filter(between(Date, as.Date("2020-01-01"), as.Date("2024-01-01"))) 
+  
+# Calculate Daily Mean Temperature
+daily_temp_stats <- filtered_temp_data %>%
+  group_by(Date) %>%
+  summarise(Mean_Temp = mean(Temperature, na.rm = TRUE)) %>% 
+  na.omit()
+
+#Calculate Monthly Mean Temperature
+monthly_temp_stats <- daily_temp_stats %>%
+  mutate(Month = lubridate::month(Date, label = TRUE, abbr = TRUE))
+
+ym_temp_stats_summary <- newport_temp_data %>%
+  mutate(Month = lubridate::month(Date, label = TRUE, abbr = TRUE)) %>% 
+  mutate(YM= zoo::as.yearmon(Date)) %>%
+  group_by(Month) %>%
+  group_by(YM) %>%
+  summarise(
+    Mean = mean(Temperature, na.rm = TRUE),
+    SD = sd(Temperature, na.rm = TRUE),
+    Min = min(Temperature, na.rm = TRUE),
+    Max = max(Temperature, na.rm = TRUE),
+    N = n(),
+    SE = SD / sqrt(N),
+    Lower_95CI = Mean - qt(0.975, N - 1) * SE,
+    Upper_95CI = Mean + qt(0.975, N - 1) * SE) %>%
+  arrange(YM)
+
+# Plotting
+temperature_timeseries <- ggplot(ym_temp_stats_summary, aes(x = as.Date(YM), y = Mean)) +
+  geom_line(aes(color = Mean), size = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "#CD3333", size=0.5, alpha = .5) +
+  scale_color_gradient(low = "yellow", high = "#CD3333", limits = c(10, 25), breaks = seq(10, 25, by = 5), name = "Temp") +
+  scale_x_date(date_breaks = "10 years", date_labels = "%Y") +
+  scale_y_continuous(limits = c(10, 25), breaks = seq(10, 25, by = 5)) +
+  common_theme +
+  labs(y = "Sea Surface Temperature (°C)", x="Date", color = "Temp (°C)", 
+       title = "", subtitle = "")
+
+# Overall and Experimental Mean Temperature Calculation
+overall_mean_temp <- mean(daily_temp_stats$Mean_Temp, na.rm = TRUE)
+overall_se_temp <- sd(daily_temp_stats$Mean_Temp, na.rm = TRUE) / sqrt(nrow(daily_temp_stats))
+experimental_mean_temp <- daily_temp_stats %>%
+  filter(between(Date, as.Date("2022-08-01"), as.Date("2022-09-30"))) %>%
+  summarise(Experimental_Mean_Temp = mean(Mean_Temp, na.rm = TRUE)) %>%
+  pull(Experimental_Mean_Temp)
+
+# Print mean temperatures
+cat("Overall mean temperature:", round(overall_mean_temp, 2), "°C\n")
+cat("Experimental (Duration) mean temperature:", round(experimental_mean_temp, 2), "°C\n")
+
+max_value <- max(daily_temp_stats$Mean_Temp, na.rm = TRUE) * 10 # Example calculation
+total_observations_temp <- nrow(daily_temp_stats)
+
+# Modify the histogram plotting code to reflect these changes
+histogram_temp <- gghistostats(
+  data = daily_temp_stats,
+  x = Mean_Temp,
+  binwidth = 0.5,
+  xlab = "Sea Surface Temperature (°C)",
+  ylab = "Frequency",
+  type = "parametric",
+  centrality.plotting = TRUE,
+  centrality.type = "parametric",
+  centrality.line.args = list(color = "red3", size = 1, linetype = "dashed"),
+  bin.args = list(color = "black", fill = "orange", alpha = 0.7),
+  results.subtitle = FALSE
+) + 
+geom_vline(xintercept = seq(12, 26, by = 2), color = "#F57C00", linetype = "dashed", size = 0.5) +
+xlab("Sea Surface Temperature (°C)") +
+ylab("Frequency") +
+scale_y_continuous(
+  name = "Frequency",
+  limits = c(0, 125),
+  sec.axis = sec_axis(~./total_observations_temp, name = "Proportion (%)\n", labels = scales::percent), expand=c(0,0)) +
+theme(plot.title = element_blank(), plot.subtitle = element_blank(), legend.position = "none") +
+common_theme
+
+heat_colors <- c(
+    "#ffeda0",  # January - light yellow
+    "#ffffcc",  # February 
+    "#fed976",  # March
+    "#feb24c",  # April
+    "#fd8d3c",  # May
+    "#fc4e2a",  # June
+    "#e31a1c",  # July
+    "red3",  # August - peak at darkest red
+    "#e31a1c",  # September
+    "#fc4e2a",  # October
+    "#ff9a17",  # November
+    "#ffd480"   # December - back to light yellow
+)
+
+# Calculate the y position for each month's label just once
+label_positions <- monthly_temp_stats %>%
+  group_by(Month) %>%
+  summarize(y_position = min(Mean_Temp, na.rm = TRUE) - range(Mean_Temp, na.rm = TRUE) * 0.1) %>%
+  ungroup()
+
+# Merge the calculated positions back into the original data frame
+monthly_temp_stats <- merge(monthly_temp_stats, label_positions, by = "Month")
+
+
+# Ensure the Month column is a factor and in the right order for plotting
+monthly_temp_stats$Month <- factor(monthly_temp_stats$Month,
+levels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))
+
+
+# Define the plot
+temp_violin_plot <- ggplot(monthly_temp_stats, aes(x = Month, y = Mean_Temp, fill= Month, color = Month)) +
+  geom_hline(yintercept = seq(12, 26, by = 2), color = "darkorange1", size = 0.5) +
+  geom_violin(trim = FALSE, scale="width", color="black") +
+  geom_boxplot(width = 0.3, outlier.shape = NA, color="black", fill="white", alpha=0.6) +  # Add boxplot inside violin
+  scale_color_manual(values = heat_colors) +  # Use the custom color vector
+  scale_fill_manual(values = heat_colors) +
+  common_theme+
+  theme(plot.title = element_blank(), plot.subtitle = element_blank(), legend.position = "none", axis.text = element_text(size = 12)) +
+  scale_y_continuous(breaks = seq(10, 28, by = 2)) +
+  xlab("Month") + ylab("Sea Surface Temperature (°C)") +
+  geom_text(stat="count", aes(label=paste0("(N=",..count..,")")), y=.35*max(monthly_temp_stats$Mean_Temp), family = "serif", 
+            color="black", size =3) +
+  expand_limits(y=.35*max(monthly_temp_stats$Mean_Temp))
+
+  
+# Display the plots
+print(histogram_temp)
+print(temp_violin_plot)
+print(temperature_timeseries)
+
+# Assuming 'histogram_temp' is your ggplot object
+ggsave(filename = here("Figures", "temp_timeseries.png"), plot = temperature_timeseries, width = 10, height = 8, dpi = 1200)
+ggsave(filename = here("Figures", "daily_temp_histogram.png"), plot = histogram_temp, width = 10, height = 8, dpi = 1200)
+ggsave(filename = here("Figures", "monthly_temp_violin_heat_colors.png"), plot = temp_violin_plot, width = 10, height = 8, dpi = 1200)
+
+```
+
+## pH Histogram
+
+```{r pH_Warning=FALSE, message=FALSE}
+
+# Read the CSV file
+newportbeach_pH <- read_csv(here("Data", "Site_Data", "Newport_pH_2020-2024.csv"))
+# Read and preprocess data
+newportbeach.pH.hourly <- read_csv(here("Data", "Site_Data", "Newport_pH_2005-2024.csv"))
+
+# Data Cleaning and Transformation for pH data
+filtered_pH_data <- newportbeach_pH %>%
+    mutate(pH = sea_water_ph_reported_on_total_scale_salinity_corrected,
+         time = as.POSIXct(time, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+         Date = as.Date(time)) %>%
+  filter(sea_water_ph_reported_on_total_scale_salinity_corrected_qc_agg == 1) %>% 
+  filter(Date >= as.Date("2020-01-01") & Date <= as.Date("2024-01-01")) %>% 
+  filter(pH >= 7.3 & pH <= 8.5) %>%
+  dplyr::select(Date, time, pH) %>%  # Rename PH to pH for clarity
+  na.omit()
+
+filtered.newportbeach.pH.hourly <- newportbeach.pH.hourly %>%
+   mutate(pH = sea_water_ph_reported_on_total_scale_salinity_corrected,
+         time = as.POSIXct(time, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+         Date = as.Date(time)) %>%
+  filter(sea_water_ph_reported_on_total_scale_salinity_corrected_qc_agg == 1) %>% 
+  filter(Date >= as.Date("2020-01-01") & Date <= as.Date("2024-01-01")) %>% 
+  filter(pH >= 7.3 & pH <= 8.5) %>%
+  dplyr::select(Date, time, pH) %>%
+  arrange(time) %>% 
+  mutate(gap = c(0, diff(time) > hours(6)),  # Create a logical vector where TRUE indicates a gap
+         group = cumsum(gap)) %>% na.omit()
+
+# Calculate 3-hour mean and confidence intervals
+six_hour_ph_stats <- filtered.newportbeach.pH.hourly %>%
+  mutate(SixHourInterval = floor_date(time, "6 hours")) %>%
+  group_by(group, SixHourInterval) %>%
+  summarise(
+    Mean = mean(pH, na.rm = TRUE),
+    SD = sd(pH, na.rm = TRUE),
+    N = n(),
+    SE = ifelse(N > 1, SD / sqrt(N), NA),
+    Lower_95CI = ifelse(N > 1, Mean - qt(0.975, N - 1) * SE, NA),
+    Upper_95CI = ifelse(N > 1, Mean + qt(0.975, N - 1) * SE, NA)
+  ) %>%
+  ungroup() %>%  # Ungroup for plotting
+  na.omit()
+
+# Calculate Daily Mean pH
+daily_pH_stats <- filtered_pH_data %>%
+  group_by(Date) %>%
+  summarise(Mean_pH = mean_pH(pH, na.rm = TRUE)) %>% 
+  na.omit()
+
+#Calculate Monthly Mean pH (Adjust column names as necessary)
+monthly_pH_stats <- daily_pH_stats %>%
+  mutate(Month = lubridate::month(Date, label = TRUE, abbr = TRUE)) %>% 
+  na.omit()
+
+# mean pH calculations 
+overall_mean_pH <- mean(daily_pH_stats$Mean_pH, na.rm = TRUE)
+# Print mean temperatures
+cat("Overall mean pH:", round(overall_mean_pH, 2), "°C\n")
+
+# pH plot timeseries with IQR lines and overall mean
+pH_timeseries <- ggplot(six_hour_ph_stats, aes(x = SixHourInterval, y = Mean, group=group)) +
+  geom_line(aes(color = Mean), size = 0.5) +
+  geom_hline(yintercept = overall_mean_pH, linetype = "dashed", color = "darkcyan", size = 0.5,
+             alpha=0.5) +
+  scale_color_gradient(low = "cyan3", high = "darkcyan", limits = c(7.3, 8.5), breaks = seq(7.3, 8.5, by = 0.3), name = "pH") +
+  scale_x_datetime(date_breaks = "1 year", date_labels = "%b %Y") +
+  scale_y_continuous(limits = c(7.3, 8.5), breaks = seq(7.3, 8.5, by = 0.3)) +
+  theme_minimal() +
+  common_theme +
+  labs(x = "Date", y = "pH (total scale)", title = "", subtitle = "")
+
+
+# 'pH_values' with experimental treatment values
+pH_values <- c(7.6, 7.9)  # Experiemtnal treatment values
+max_value_pH <- max(daily_pH_stats$Mean_pH, na.rm = TRUE)
+total_observations_pH <- nrow(daily_pH_stats)
+
+# Now, creating the histogram for pH
+histogram_pH <- gghistostats(
+  data = daily_pH_stats,
+  x = Mean_pH,
+  binwidth = 0.05,
+  xlab = "pH (total scale)",
+  ylab = "Frequency",
+  type = "parametric",
+  centrality.plotting = TRUE,
+  centrality.type = "parametric",
+  centrality.line.args = list(color = "darkcyan", size = 1, linetype = "dashed"),
+  bin.args = list(color = "black", fill = "cyan3", alpha = 0.7),
+  results.subtitle = FALSE
+) + 
+geom_vline(xintercept = pH_values, color = "darkcyan", linetype="dotted", size = 0.5) +
+  xlab("pH (total scale)")+ylab("Frequency") +
+scale_y_continuous(
+  name = "Frequency",
+  limits = c(0, 500),
+  sec.axis = sec_axis(~./total_observations_pH, name = "Proportion (%)\n", labels = scales::percent), expand = c(0, 0)) +
+theme(plot.title = element_blank(), plot.subtitle = element_blank(), legend.position = "none") +
+common_theme
+
+# setting ph colors for the treatments 
+pH_colors <- c(
+    "#f0ffff",  # January - light cyan
+    "#e0ffff",  # February
+    "#d1eeee",  # March
+    "#afeeee",  # April
+    "#7fefd4",  # May
+    "#40e0d0",  # June
+    "#20b2aa",  # July
+    "#008b8b",  # August - peak at dark cyan
+    "#008080",  # September
+    "#006666",  # October
+    "#004c4c",  # November
+    "#003333"   # December - darkest cyan
+)
+
+# Calculate the y position for each month's label just once
+label_positions <- monthly_pH_stats %>%
+  group_by(Month) %>%
+  summarize(y_position = min(Mean_pH, na.rm = TRUE) - range(Mean_pH, na.rm = TRUE) * 0.1) %>%
+  ungroup()
+
+# Merge the calculated positions back into the original data frame
+monthly_pH_stats <- merge(monthly_pH_stats, label_positions, by = "Month")
+
+
+# Ensure the Month column is a factor and in the right order for plotting
+monthly_pH_stats$Month <- factor(monthly_pH_stats$Month,
+levels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))
+
+
+# Adapting the plotting steps for pH data
+pH_violin_plot <- ggplot(monthly_pH_stats, aes(x = Month, y = Mean_pH, fill= Month, color = Month)) +
+  geom_hline(yintercept = seq(7.7, 7.9, by = 0.2), color = "darkcyan", size = 0.5) +
+  geom_violin(trim = FALSE, scale="width", color="black") +
+  geom_boxplot(width = 0.3, outlier.shape = NA, color="black", fill="white", alpha=0.6) +
+  scale_color_manual(values = pH_colors) +  # Assuming heat_colors is appropriate for pH
+  scale_fill_manual(values = pH_colors) +
+  common_theme+
+  theme(plot.title = element_blank(), plot.subtitle = element_blank(), legend.position = "none"
+        ) +
+  xlab("Month")+ylab("pH (total scale)") +
+  geom_text(stat="count", aes(label=paste0("(N=",..count..,")")), y=.8612*max(monthly_pH_stats$Mean_pH), family = "serif",
+            color="black", size =3) +
+  scale_y_continuous(breaks = seq(7.2, 8.6, by = 0.2)) +
+  expand_limits(y=.86125*max(monthly_pH_stats$Mean_pH))
+
+
+# Print the plots
+print(pH_timeseries)
+print(pH_violin_plot)
+print(histogram_pH)
+
+# Save the plot if needed
+ggsave(filename = here("Figures", "monthly_pH_violin_plot.png"), plot = pH_violin_plot, width = 10, height = 8, dpi = 1200)
+ggsave(filename = here("Figures", "daily_pH_histogram.png"), plot = histogram_pH, width = 10, height = 8, dpi = 1200)
+ggsave(filename = here("Figures", "pH_timeseries.png"), plot = pH_timeseries, width = 10, height = 8, dpi = 1200)
+
+```
+
+## EXporting and combining plots 
+
+```{r, warning=FALSE, message=FALSE, include=FALSE}
+
+# Annotate the study site map for the top-left corner
+study_site_map_annotated <- study_site_map +
+  annotate("text", x = -Inf, y = Inf, label = "A)", vjust = 1.35, hjust = -0.25, size = 6, color = "black")
+
+# Annotate the histogram
+histogram_temp_annotated <- histogram_temp +
+  annotate("text", x = -Inf, y = Inf, label = "B)", vjust = 1, hjust = -0.15, size = 6, color = "black")
+
+histogram_pH_annotated <- histogram_pH +
+  annotate("text", x = -Inf, y = Inf, label = "C)", vjust = 1, hjust = -0.15, size = 6, color = "black")
+
+# Annotate the violin plot
+temp_violin_plot_annotated <- temp_violin_plot +
+  annotate("text", x = -Inf, y = Inf, label = "B)", vjust = 1, hjust = -0.25, size = 6, color = "black")
+
+pH_violin_plot_annotated <- pH_violin_plot +
+  annotate("text", x = -Inf, y = Inf, label = "C)", vjust = 1, hjust = -0.25, size = 6, color = "black")
+
+# Define the layout matrix for more control
+layout_matrix <- rbind(c(1, 2),
+                       c(1, 3))
+
+# For violin plots
+ggsave(here("Figures", "combined_violin_plots.png"), 
+       grid.arrange(
+         study_site_map_annotated,
+         temp_violin_plot_annotated, 
+         pH_violin_plot_annotated,
+         layout_matrix = layout_matrix,
+         widths = c(4, 5, 0.1)  # Adjust as needed
+       ), 
+       width = 12, height = 6)
+
+# For histogram plots
+ggsave(here("Figures", "combined_histogram_plots.png"), 
+       grid.arrange(
+         study_site_map_annotated,
+         histogram_temp_annotated,
+         histogram_pH_annotated,
+         layout_matrix = layout_matrix,
+         widths = c(3, 4, 1)  # Adjust as needed
+       ), 
+       width = 12, height = 6)
+
+ggsave(filename = here("Figures", "study_site_map_annotated.png"), plot = study_site_map_annotated, width = 4.5, height = 6, dpi = 1600)
+ggsave(filename = here("Figures", "histogram_temp_annotated.png"), plot = histogram_temp_annotated, width = 7, height = 6, dpi = 1200)
+ggsave(filename = here("Figures", "histogram_pH_annotated.png"), plot = histogram_pH_annotated, width = 7, height = 6, dpi = 1200)
+ggsave(filename = here("Figures", "temp_violin_plot_annotated.png"), plot = temp_violin_plot_annotated, width = 7, height = 6, dpi = 1200)
+ggsave(filename = here("Figures", "pH_violin_plot_annotated.png"), plot = pH_violin_plot_annotated, width = 7, height = 6, dpi = 1200)
+
+```
+
+# Mesocosm Data Analysis
+
+```{r}
+mesocosm.data <- read_csv(here::here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"))
+mesocosm.data <- mesocosm.data %>%
+  mutate(Date = as.Date(Date, format = "%m/%d/%Y")) %>%
+  mutate(Temp_Treatment = as.factor(Temp_Treatment),
+         pH_Treatment = as.factor(pH_Treatment)) %>% 
+  filter(pH_Treatment != "Sump") # Filter out the "Sump" treatment
+
+mesocosm_temp_lm_model <- lm(Temp_C ~ Temp_Treatment * pH_Treatment, data = mesocosm.data)
+anova_mescososm_temp_results <- anova(mesocosm_lm_model)
+check_model(mesocosm_temp_lm_model)
+# include this table in the appendix through gt table 
+
+mesocosm_pH_lm_model <- lm(pH ~ Temp_Treatment * pH_Treatment, data = mesocosm.data)
+anova_mescososm_pH_results <- anova(mesocosm_pH_lm_model)
+check_model(mesocosm_pH_lm_model)
+
+```
+
+
+```{r}
+#summary statistics for pH by treatment
+ph.means <- mesocosm.data %>%
+  group_by(pH_Treatment) %>%
+  dplyr::summarize(Mean_pH = respirometry::mean_pH(pH, na.rm = TRUE), #used to average pH nased on H+ ions
+            Sd_pH = sd(pH, na.rm = TRUE),
+            N = n(),
+            SE = Sd_pH / sqrt(N),
+            )
+
+
+```
+
+
+```{r}
+#summary statistics for pH by treatment
+pCO2.means <- mesocosm.data %>%
+  group_by(pH_Treatment) %>%
+  
+  dplyr::summarize(Mean_pCO2 = mean(pCO2, na.rm = TRUE),
+            Sd_pCO2 = sd(pCO2, na.rm = TRUE),
+            N = n(),
+            SE = Sd_pCO2 / sqrt(N),
+            )
+
+Temperature.means <- mesocosm.data%>%
+  group_by(pH_Treatment) %>%
+  dplyr::summarize(Mean_Temperature = mean(Temp_C, na.rm = TRUE),
+            Sd_Temperature = sd(Temp_C, na.rm = TRUE),
+            N = n(),
+            SE = Sd_Temperature / sqrt(N),
+            )
+
+print(ph.means)
+print(pCO2.means)
+print(Temperature.means)
+
+ph.data <- mesocosm.data %>%
+  dplyr::select(pH_Treatment, pH) %>%
+  filter(pH_Treatment != "Sump") # Filter out the "Sump" treatment
+
+ph.data <- na.omit(ph.data)
+
+# Perform t-test to compare means
+t_test_result <- t.test(pH ~ pH_Treatment, data = ph.data)
+
+# Print the t-test results
+print(t_test_result)
+
+# Create a boxplot with significance annotation
+# Basic plot without stat_signif
+t_test_ph <- ggplot(ph.data, aes(x = as.factor(pH_Treatment), y = pH, fill = as.factor(pH_Treatment))) +
+  geom_boxplot(outliers = FALSE) +
+  common_theme +
+  geom_signif(comparisons = list(c("Low", "Ambient")), 
+            test = "t.test", 
+            map_signif_level = TRUE, 
+            textsize = 4, 
+            vjust = -0.5) +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = c("darkorange", "cyan3")) +
+  labs(title = NULL,
+       x = "pH Treatment",
+       y = expression(pH[T]*""),
+       fill = "Treatment") +
+  scale_y_continuous(limits = c(7.4, 8.2)) 
+
+print(t_test_ph)
+
+mesocosm.data$DayCount = as.numeric(as.factor(mesocosm.data$Date))
+
+# Two-way ANOVA to understand the effects if temperature readings (Temp_C) significantly differ by Temp_Treatment
+temp_model <- lme4::lmer(Temp_C ~ Temp_Treatment + (1|Tank_ID) + (1|DayCount), data = mesocosm.data)
+summary(temp_model)
+# Analyze if pH readings significantly differ by pH_Treatment
+pH_model <- lme4::lmer(pH ~ pH_Treatment + (1|Tank_ID) + (1|Date), data = mesocosm.data)
+summary(pH_model)
+anova_results_between <- aov(Temp_C~ Temp_Treatment * pH_Treatment, data = mesocosm.data)
+anova_results_between <- aov(pH~ Temp_Treatment * pH_Treatment, data = mesocosm.data)
+# For normality check of ANOVA residuals:
+plot(residuals(anova_results_between))
+
+
+#  'pH' as the response variable and 'Date'  treated as a factor 
+
+
+kruskal.test(Mean_Temp ~ Temp_Treatment, data = pH.Temp.joule.data)
+# Create a new interaction variable
+pH.Temp.joule.data$interaction <- with(pH.Temp.joule.data, interaction(Temp_Treatment, pH_Treatment))
+
+# Perform the Kruskal-Wallis test
+kruskal_test_results <- kruskal.test(Mean_Temp ~ interaction, data = pH.Temp.joule.data)
+
+# Display the results
+kruskal_test_results
+
+
+
+# View the ANOVA table
+summary(anova_result)
+
+# Fit a linear model
+model_temp <- lm(Temp_C ~ Temp_Treatment + pH_Treatment, data = mesocosm.data)
+model_ph <- lm(pH ~ Temp_Treatment + pH_Treatment, data = mesocosm.data)
+
+# Check normality for temperature model
+qqnorm(residuals(model_temp))
+qqline(residuals(model_temp))
+
+# Perform Shapiro-Wilk test for temperature
+shapiro.test(residuals(model_temp))
+
+# Check normality for pH model
+qqnorm(residuals(model_ph))
+qqline(residuals(model_ph))
+
+# Perform Shapiro-Wilk test for pH
+shapiro.test(residuals(model_ph))
+ggsave(here("Figures", "pH_by_Treatment.png"), t_test_ph, width = 6, height = 6, units = "in", dpi = 1200)
+```
+
+
+# Thermal Performance Curve Analysis 
+
+## Analyzing Respirometry Data
+
+
+
+
+
+
+```{r Clearing Environment, message=FALSE, include=FALSE} 
+# Clear the environment
+rm(list = ls())
+```
+
+# Data Preparation for Respiration Analysis 
+
+```{r For Loop for Reading and Writing Respiration Data, eval=FALSE, include=FALSE}
+
+# Reading in respiration metadata
+respo.metadata <- read_csv(here::here("Data", "Experiment_Metadata", "Respirometry_Metadata.csv"))
+
+# Function to read a CSV file, skip the first row, skip the last few rows, and check for issues
+read_and_process_csv <- function(filename, path) {
+  
+  # Determine the number of lines in the file and subtract 4 to skip the last few
+  total_lines <- length(readLines(file.path(path, filename)))
+  data_length <- total_lines - 4  # Assuming the last 4 lines are not needed
+  
+  # Read the CSV file, skipping the first row and the last few rows
+  data <- read_csv(file.path(path, filename), skip = 1, n_max = data_length, col_names=TRUE, 
+                   show_col_types = FALSE, name_repair = "unique_quiet")
+  
+  # Return the data without the last rows
+  return(data)
+}
+
+#Set the path to the location of the raw oxygen data files
+path.p <- here::here("Data","Respirometry_Data")
+
+#renaming the file names as file.names.full
+file.names <- list.files(path = path.p, pattern = "csv$", recursive = TRUE)
+
+#creating data frame to import respiration data into 
+respiration.rates <- data.frame(matrix(NA, nrow=length(file.names), ncol=6)) #setting column names
+colnames(respiration.rates) <- c("File_ID","Intercept", "umolO2.L.sec","Temp.C", "Salinity", "Pressure") 
+
+for(i in 1:length(file.names)) {
+  
+#Reading and processing respirometry data
+Respiration_Data <- read_and_process_csv(file.names[i], path.p) %>%
+    mutate(File_ID=file.names[i]) %>% # Add the file name to the data frame
+    dplyr::select(File_ID, Date, Time, Value, Temp, Salinity, Pressure) %>%  # Selecting variables
+    unite(Datetime, Date, Time, sep = " ") %>%  # Combine Date and Time into Datetime
+    mutate(Datetime = mdy_hms(Datetime)) %>%  # Convert Datetime to POSIXct format
+    drop_na()  # Drop rows with NA values
+
+  # Getting the active file name
+  Filename <- sub(".csv", "", file.names[i])
+  
+  # Matching file row to file name 
+  Row <- which(respo.metadata$File_ID == file.names[i])
+  
+  Start_Time <- ymd_hms(respo.metadata$Respirometry_Start_Time[Row])
+  Stop_Time <- ymd_hms(respo.metadata$Respirometry_Stop_Time[Row])
+  
+  # Trimming start and stop times
+  Respiration_Data <-  Respiration_Data %>%
+    filter(Datetime >= Start_Time & Datetime <= Stop_Time) %>% # filter to start and stop time
+    slice(120:n()) %>% # drop the first two minutes of data
+    mutate(Sec = 1:n())  # create a new column for every second for the regression
+  
+  Respiration_Data_Unthinned <- Respiration_Data # saving original data prior to thinning
+  
+  Respiration_Tibble <- tibble(Time = as.numeric(), Value = as.numeric(),
+                               Temp = as.numeric(), Sec = as.numeric(),
+                               Salinity = as.numeric(), Pressure = as.numeric())
+
+  Subsample <- respR::subsample(Respiration_Data, n = 15, plot=FALSE)
+  Respiration_Tibble<-rbind(Respiration_Tibble, Subsample)
+  
+# Plotting full data     
+full.plot<- ggplot(Respiration_Data_Unthinned, aes(x = Sec, y = Value)) +
+    geom_point(color = "lightblue") +
+    labs(x = 'Time (seconds)', y = expression(paste(' O'[2],' (',mu,'mol/L)')),
+      title = "Original Data")
+  
+# Plotting thinned data 
+thinned.plot <- ggplot(Respiration_Tibble, aes(x = Sec, y = Value))+
+    geom_point(color = "lightblue")+
+    labs(x = 'Time (seconds)', y = expression(paste(' O'[2],' (',mu,'mol/L)')),
+      title = "Thinned Data")
+
+# Defining the alpha value for bootstrapping
+N <- nrow(Respiration_Tibble)
+alpha <- 0.3  #alpha value for bootstrapping
+min_n <- alpha * N
+
+if (min_n < 15) {
+  stop("Alpha is too small")
+}
+
+# Bootstrapping technique (Olito et al. 2017)
+Regs <- rankLocReg(xall=Respiration_Tibble$Sec, yall=Respiration_Tibble$Value, alpha=alpha, method="pc", verbose=TRUE)  
+
+#creates pdf of each individual respiration plot and statistics for each plot
+pdf(paste0(here::here("Output","Respo_Output","Thinning_Plots"),"/", Filename ,"thinning.pdf"))
+  
+plot(Regs) # plot the results of the regs bootstrapping technique
+plot(full.plot+thinned.plot) # use patchwork to bring the raw and thinned data together
+dev.off()
+
+# fill in all the O2 consumption and rate data
+respiration.rates[i,2:3] <- Regs$allRegs[1,c(4,5)] #inserts slope and intercept in the dataframe
+respiration.rates[i,1] <- paste0(Filename,".csv") #stores the file name
+respiration.rates[i,4] <- mean(Respiration_Tibble$Temp, na.rm=TRUE) #stores mean temperature organisms experienced
+respiration.rates[i,5] <- mean(Respiration_Tibble$Salinity, na.rm=TRUE) #stores mean salinity organisms experienced
+respiration.rates[i,6] <- mean(Respiration_Tibble$Pressure, na.rm=TRUE) #stores mean pressure organisms experienced
+
+}
+
+#writing out data as a CSV
+write_csv(respiration.rates, here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv")) #saves to location
+
+
+```
+
+# Loading Data
+
+
+```{r, Loading Data, eval=FALSE, message=FALSE}
+
+# Reading in Experiment Data 
+
+# Reading in experimental treatment metadata for the mesocosm 
+experiment.metadata <- read_csv(here::here("Data", "Experiment_Metadata","Experiment_Treatment_Metadata.csv"))
+
+# Reading in mesocosm system data and averaging pH and temperature data
+mesocosm.treatment.data <- read_csv(here::here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv")) %>% 
+  filter(Tank_ID != "Sump") %>%
+  dplyr::select(Temp_Treatment, pH_Treatment, Temp_C, pH) %>% 
+  dplyr::group_by(Temp_Treatment, pH_Treatment) %>%
+  dplyr::summarize(Mean_pH=respirometry::mean_pH(pH, na.rm = TRUE), Mean_Temp=mean(Temp_C, na.rm = TRUE))
+
+# Merging the experimental treatment data 
+treatment.info <- left_join(experiment.metadata, mesocosm.treatment.data) 
+
+# Reading in organism data 
+
+# Reading in organism morphometric data 
+snail.data <- read_csv(here::here("Data", "Snail_Data", "Tegula_funebralis_Morphometric_Data.csv")) %>% 
+  dplyr::select(Snail_ID:Experiment_End_Date)
+
+# Reading in ash free dry weight data and calculating ash free dry weight 
+snail.afdw.data <- read_csv(here::here("Data", "Snail_Data","Tegula_funebralis_AFDW.csv"))%>% 
+  dplyr::select(Snail_ID, Ash_Free_Dry_Weight)
+
+# Joining experimental treatment metadata and snail data 
+experiment.data <- left_join(treatment.info, snail.data) %>% 
+  left_join(snail.afdw.data)
+
+# Reading in respiration data 
+
+# Reading in respiration metadata
+respo.metadata <- read_csv(here::here("Data", "Experiment_Metadata", "Respirometry_Metadata.csv"))
+
+# Loading in respiration data from the foor loop 
+respirometry.data <- read_csv(here("Data", "Thinned_Respirometry_Data", "Respirometry.Data.csv"))
+
+# Merging respiration data with the experimental data 
+joined.respo.dataset <- left_join(experiment.data, respo.metadata) %>% 
+  left_join(respirometry.data) %>% 
+  dplyr::select(-File_ID, -Respirometry_Start_Time, -Respirometry_Stop_Time, -Experiment_Start_Date, -Experiment_End_Date)
+
+#Removing snails that faced mortality during the experiment
+filtered.respo.dataset <- joined.respo.dataset %>% 
+  filter(Snail_ID != 43,
+         Snail_ID != 36,
+         Snail_ID != 72) 
+ # mortality (not responsive to forceps)
+
+#load in image icon for plots
+image <- readPNG(here::here("Images", "Tegula_funebralis_icon.png"))
+
+
+#calculating chamber water volume by subtracting organism volume from chamber volume
+respo.dataset <- filtered.respo.dataset %>%    
+  mutate(Volume_mL = 650-Organism_Volume_mL, #Volume of water in chamber = full chamber volume (650 mL) of water minus organism volume (seawater columns set to 0)
+         Volume_L = conv_multiunit(Volume_mL, "mL", "L"), #converting from mL to L (/1000)
+         umolO2.sec = umolO2.L.sec*Volume_L) #standardizing to umolO2/sec
+
+# Filtering control respiration rates
+respo.control.data <- respo.dataset %>%
+  filter(Identity=="Control") %>% 
+  group_by(Temp_Treatment, pH_Treatment) %>% #grouping by treatments and control identity
+  dplyr::summarize(blank.rate = mean(umolO2.sec, na.rm=TRUE)) #means for blank seawater respiration 
+
+# Checking to see if there are differences in respiration between pH treatments and temp treatments (temp significant)
+# aov_result <- aov(umolO2.sec ~ Temp_Treatment * pH_Treatment, data = respo.control.data)
+# summary(aov_result)
+
+# Joining summarized control respiration data to full respiration dataset 
+respo.dataset <- left_join(respo.dataset, respo.control.data)
+
+# Conversionting respiration rates and normalizing to ash free dry weight (grams) 
+respo.rates.dataset <- respo.dataset %>% 
+  mutate(
+    
+    # calculating corrected respiration rates
+    umolO2.sec = -(umolO2.sec - blank.rate), # subtract the blank rates from the raw rates
+
+    # converting from umolO2/sec to umolO2/hour
+    umolO2.hr=conv_resp_unit(umolO2.sec, from="umol_O2 / sec", to="umol_O2 / hr"),
+    umolO2.gram.hr = umolO2.hr / Ash_Free_Dry_Weight,
+    
+    # converting from umolO2/sec to mmolO2/hour
+    mmolO2.hr = conv_resp_unit(umolO2.sec, from="umol_O2 / sec", to="mmol_O2 / hr"), 
+    mmolO2.gram.hr = mmolO2.hr / Ash_Free_Dry_Weight,
+    
+    # converting from mmol/hr to molO2/hour
+    molO2.hr = mmolO2.hr / 1000,
+    molO2.gram.hr = molO2.hr / Ash_Free_Dry_Weight,
+
+    # converting from umolO2/sec to mLO2/hr
+    mLO2.hr = conv_resp_unit(umolO2.sec, from="umol_O2 / sec", to="ml_O2 / hr"),
+    mLO2.gram.hr = mLO2.hr / Ash_Free_Dry_Weight,
+    
+    # converting from mLO2/hr to uLO2/hr
+    uLO2.hr = mLO2.hr*1000, # converting from mL to uL
+    uLO2.gram.hr = uLO2.hr/ Ash_Free_Dry_Weight) %>% 
+  
+  filter(Identity == "Treatment") 
+
+ as_tibble(respo.rates.dataset)
+
+write_csv(respo.rates.dataset, here("Data", "Thinned_Respirometry_Data", "Respiration.Rates.Dataset.csv"))
+
+#Paine 1971 ~206 uL O2/hr @ 13.5 C ~ 413 uL O2/hr @ 23 C (+ or - 66 uL O2/hr)
+```
+
+
+```{r}
+
+ylab = expression(mu*mol~O[2]~g^-1~hr^-1)
+xlab = expression(Temperature~plain("(°C)"))
+
+#load in the data set and select for temperature, rate, and pH treatment
+respo.rates.tpc <- respo.rates.dataset %>% 
+  mutate(rate=umolO2.gram.hr, temp=Temp.C) %>%
+  dplyr::select(Temp_Treatment, pH_Treatment, temp, rate) %>% 
+  na.omit(umolO2.gram.hr)
+
+
+common_theme <- theme_minimal(base_size=12, base_family="serif") +
+  theme(
+    plot.background = element_rect(fill = "white", colour = "white"),  # Set the background to white
+    text = element_text(family = "serif", color="black"),
+    legend.position = 'none',
+    strip.text = element_text(hjust = 0.5, size = 12), 
+    strip.text.x = element_text(vjust = 0.5, size = 12), 
+    strip.text.y = element_text(vjust = 0.5, size = 12), 
+    axis.title.x = element_text(margin = margin(t = 10), size = 12, hjust = 0.5),
+    axis.title.y = element_text(margin = margin(r = 10), size = 12, vjust = 0.5),  # Same size for both axes
+    axis.text = element_text(size = 10),  # Same size for both axes
+    plot.title = element_text(hjust = 0.5, size = 14),
+    plot.margin = margin(t = 1, r = 1, b = 1, l = 1, unit = "cm")
+  )
+
+# Create a single ggplot graph with both curves
+respo.rates.plot <- ggplot(respo.rates.tpc, aes(Temp_Treatment, rate, color =pH_Treatment)) +
+  geom_point() +
+  theme_bw() +
+  common_theme +
+  labs(
+    x = xlab,
+    y = ylab,
+    title = 'Respiration Rates Across Temperatures'
+  ) +
+  scale_x_continuous(breaks = seq(12, 26, by = 2)) +
+  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"))
+
+print(respo.rates.plot)
+
+```
+
+```{r Examining Temp and pH, warning=FALSE, message=FALSE}
+
+# Creating a discrete color palette for the insect orders
+colourCount <- length(unique(respo.rates.dataset$pH_Treatment))
+pal.1 <- colorRampPalette(RColorBrewer::brewer.pal(9, "Set1"))(colourCount)
+
+# Scaling figure with orders color-coded
+ggplot(respo.rates.dataset, aes(x=log10(Ash_Free_Dry_Weight), y=log10(umolO2.hr), color=pH_Treatment)) + 
+  geom_point(aes(col=pH_Treatment), size=1) + 
+  scale_color_manual(values=pal.1) +
+  stat_smooth(method="lm", se=T)  + 
+  common_theme 
+
+pal.1 <- c("cyan3", "orange", "#E41A1C", "#3A85A8", "#629363", "#C4625D", "#FFC81D", "#BF862B", "#EB7AA9", "#999999")
+# Scaling figure with orders color-coded
+ggplot(respo.rates.dataset, aes(x=log10(Ash_Free_Dry_Weight), y=log10(umolO2.hr), color=as.factor(Temp_Treatment), group=as.factor(pH_Treatment))) + 
+  facet_wrap(~Temp_Treatment) +
+  geom_point(aes(col=as.factor(Temp_Treatment)), size=1) + 
+  scale_color_manual(values=pal.1) +
+  stat_smooth(method="lm", se=T) + 
+  common_theme 
+```
+
+
+
+
+```{r}
+
+multi.respo.rates.tpc <- respo.rates.tpc %>% 
+  dplyr::select(pH_Treatment, temp, rate) 
+  
+ylab = expression(umol~O[2]/g/hr)
+xlab = "Temperature (°C)"
+
+# Load in data and filter to keep just a single curve (low pH)
+low.pH <- filter(respo.rates.tpc, pH_Treatment == 'Low')
+
+# Load in data and filter to keep just a single curve (high pH)
+high.pH <- filter(respo.rates.tpc, pH_Treatment == 'Ambient')
+
+# fit every model formulation in rTPC
+model_selection_fits <- nest(multi.respo.rates.tpc, data = c(temp, rate)) %>% 
+   mutate(beta = purrr::map(data, ~nls_multstart(rate~beta_2012(temp = temp, a, b, c, d, e),
+                        data = .x,
+                        iter = c(5,5,5,5,5),
+                        start_lower = rTPC::get_start_vals(.x$temp, .x$rate, model_name = 'beta_2012') - 10,
+                        start_upper = rTPC::get_start_vals(.x$temp, .x$rate, model_name = 'beta_2012') + 10,
+                        lower = rTPC::get_lower_lims(.x$temp, .x$rate, model_name = 'beta_2012'),
+                        upper = rTPC::get_upper_lims(.x$temp, .x$rate, model_name = 'beta_2012'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+          boatman = purrr::map(data, ~nls_multstart(rate~boatman_2017(temp = temp, rmax, tmin, tmax, a,b),
+                        data = .x,
+                        iter = c(4,4,4,4,4),
+                        start_lower = rTPC::get_start_vals(.x$temp, .x$rate, model_name = 'boatman_2017') - 10,
+                        start_upper = rTPC::get_start_vals(.x$temp, .x$rate, model_name = 'boatman_2017') + 10,
+                        lower = rTPC::get_lower_lims(.x$temp, .x$rate, model_name = 'boatman_2017'),
+                        upper = rTPC::get_upper_lims(.x$temp, .x$rate, model_name = 'boatman_2017'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         gaussian = purrr::map(data, ~nls_multstart(rate~gaussian_1987(temp = temp, rmax, topt, a),
+                        data = .x,
+                        iter = c(4,4,4),
+                        start_lower = rTPC::get_start_vals(.x$temp, .x$rate, model_name = 'gaussian_1987') - 10,
+                        start_upper = rTPC::get_start_vals(.x$temp, .x$rate, model_name = 'gaussian_1987') + 10,
+                        lower = rTPC::get_lower_lims(.x$temp, .x$rate, model_name = 'gaussian_1987'),
+                        upper = rTPC::get_upper_lims(.x$temp, .x$rate, model_name = 'gaussian_1987'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         sharpeschoolfull = purrr::map(data, ~nls_multstart(rate~sharpeschoolfull_1981(temp = temp, r_tref,e,el,tl,eh,th, tref = 15),
+                        data = .x,
+                        iter = c(4,4,4,4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolfull_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         sharpeschoolhigh = purrr::map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                        data = .x,
+                        iter = c(4,4,4,4),
+                        start_lower = rTPC::get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = rTPC::get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = rTPC::get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = rTPC::get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         weibull = purrr::map(data, ~nls_multstart(rate~weibull_1995(temp = temp, a,topt,b,c),
+                        data = .x,
+                        iter = c(4,4,4,4),
+                        start_lower = rTPC::get_start_vals(.x$temp, .x$rate, model_name = 'weibull_1995') - 10,
+                        start_upper = rTPC::get_start_vals(.x$temp, .x$rate, model_name = 'weibull_1995') + 10,
+                        lower = rTPC::get_lower_lims(.x$temp, .x$rate, model_name = 'weibull_1995'),
+                        upper = rTPC::get_upper_lims(.x$temp, .x$rate, model_name = 'weibull_1995'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)))
+
+#glimpse(dplyr::select(model_selection_fits, 1:8))
+
+# stack models
+model_stack <- dplyr::select(model_selection_fits, -data) %>%
+  pivot_longer(., names_to = 'model_name', values_to = 'fit', boatman:weibull)
+
+# get parameters using tidy
+params <- model_stack %>%
+  mutate(., est = purrr::map(fit, tidy)) %>%
+  dplyr::select(-fit) %>%
+  unnest(est)
+
+# get predictions using augment
+newdata <- tibble(temp = seq(min(respo.rates.tpc$temp), max(respo.rates.tpc$temp), length.out = 100))
+model_preds <- model_stack %>%
+  mutate(., preds = purrr::map(fit, augment, newdata = newdata)) %>%
+  dplyr::select(-fit) %>%
+  unnest(preds)
+
+# seperating the curves for graphing seperate
+high_pH <- filter(respo.rates.tpc, pH_Treatment == "Ambient") 
+high_pH_model_preds <- filter(model_preds, pH_Treatment == "Ambient")
+low_pH <- filter(respo.rates.tpc, pH_Treatment == "Low") 
+low_pH_model_preds <- filter(model_preds, pH_Treatment == "Low")
+
+# take a random point from each model for labelling
+high_pH_model_labs <- filter(high_pH_model_preds, temp < 24) %>%
+  group_by(., model_name) %>%
+  sample_n(., 1) %>%
+  ungroup()
+
+# take a random point from each model for labelling
+low_pH_model_labs <- filter(low_pH_model_preds, temp < 24) %>%
+  group_by(., model_name) %>%
+  sample_n(., 1) %>%
+  ungroup()
+
+
+# plot
+wrapped.model.fits <- ggplot(model_preds, aes(temp, rate, color = pH_Treatment)) +
+  geom_point(aes(Temp_Treatment, rate), respo.rates.tpc) +
+  geom_line(aes(temp, .fitted)) +
+  facet_wrap(~model_name, scales = 'free', ncol = 5) +
+  common_theme +
+  scale_x_continuous(breaks = seq(12, 26, by = 2)) +
+  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), 
+                     name = "Treatment") +
+  labs(x = xlab,
+       y = ylab,
+       title = 'Fits of TPC Models') +
+  geom_hline(aes(yintercept = 0), linetype = 2)
+
+# multiple models low pH plot
+low_pH_model_preds_plot <- ggplot(low_pH_model_preds, aes(temp, .fitted)) +
+  geom_point(aes(Temp_Treatment, rate), low_pH) +
+  geom_line(aes(col = model_name)) +
+  geom_label_repel(aes(temp, .fitted, label = model_name, col = model_name), fill = 'white', nudge_x=-1, nudge_y = 15, segment.size = 0.5,
+                   segment.colour = 'black', low_pH_model_labs) +
+  common_theme +
+  theme(plot.subtitle = element_text(hjust = 0.5)) +
+  scale_x_continuous(breaks = seq(12, 26, by = 2)) +
+  labs(x = xlab,
+       y = ylab,
+       title = 'Thermal Performance Curve Model Fits',
+       subtitle='Low pH') +
+  geom_hline(aes(yintercept = 0), linetype = 2) +
+  scale_color_brewer(type = 'qual', palette = "Set1")
+
+# multiple models high pH plot
+high_pH_model_preds_plot <- ggplot(high_pH_model_preds, aes(temp, .fitted)) +
+  geom_point(aes(Temp_Treatment, rate), high_pH) +
+  geom_line(aes(col = model_name)) +
+  geom_label_repel(aes(temp, .fitted, label = model_name, col = model_name), fill = 'white', nudge_x=-1, nudge_y = 15, segment.size = 0.5,
+                   segment.colour = 'black', high_pH_model_labs) +
+  common_theme +
+  theme(plot.subtitle = element_text(hjust = 0.5)) +
+  scale_x_continuous(breaks = seq(12, 26, by = 2)) +
+  labs(x = xlab,
+       y = ylab,
+       title =  NULL,
+       subtitle='Ambient pH') +
+  geom_hline(aes(yintercept = 0), linetype = 2) +
+  scale_color_brewer(type = 'qual', palette = "Set1")
+
+# Combine plots vertically
+combined_model_fits <- low_pH_model_preds_plot / high_pH_model_preds_plot
+combined_model_fits
+wrapped.model.fits
+
+ggsave(here::here("Figures", "multi_combined_model_fits.png"), combined_model_fits, width = 10, height = 10)
+ggsave(here::here("Figures", "wrapped_model_fits.png"), wrapped.model.fits, width = 20, height = 8)
+```
+
+# Thermal Performance Curve Model Selection and Comparison
+
+```{r Model Selection and Comparison}
+
+# Calculate AICc and create model_aic
+model_aic <- model_stack %>%
+  mutate(info = purrr::map(fit, glance),
+         AICc =  map_dbl(fit, MuMIn::AICc)) %>%
+  unnest(info) %>%
+  dplyr::select(Treatment = pH_Treatment, model_name, sigma, AIC, AICc, BIC, df.residual)
+
+# Write AIC values to CSV file
+write.csv(model_aic, "model_aics.csv", row.names = FALSE)
+
+# Find the best model across both pH_Treatment levels
+best_model <- model_aic %>%
+  group_by(Treatment) %>% 
+  filter(AICc == min(AICc)) %>%
+  pull(model_name)
+
+# Print the best model
+print(best_model)
+
+# Find the best model for low pH
+low_pH_best_model <- model_aic %>%
+  filter(Treatment == "Low") %>% 
+  filter(AICc == min(AICc)) %>%
+  pull(model_name)
+
+# Find the best model for high pH
+high_pH_best_model <- model_aic %>%
+  filter(Treatment == "Ambient") %>% 
+  filter(AICc == min(AICc)) %>%
+  pull(model_name)
+
+# Print the best models
+print(paste("Best Low pH Model:", low_pH_best_model))
+print(paste("Best High pH Model:", high_pH_best_model))
+
+model_aic <- model_aic %>%
+  mutate(across(where(is.numeric), round, 2))
+
+# Display model_aic as a table with highlighted rows for best models
+tbl.aic <- model_aic %>%
+  gt(rowname_col = "model_name") %>%
+  tab_header(title = md("**Thermal Performance Models Statistical Summaries**")) %>%
+  gt_highlight_rows(rows = which(model_aic$model_name %in% c(low_pH_best_model, high_pH_best_model)), font_weight = "normal") %>%
+  tab_style(
+    style = cell_text(font = "Times New Roman"),
+    locations = cells_body()
+  ) %>%
+  tab_style(
+    style = cell_text(font = "Times New Roman"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_text(font = "Times New Roman"),
+    locations = cells_title()
+  ) %>%
+  tab_style(
+    style = cell_text(font = "Times New Roman"),
+    locations = cells_stub()
+  )
+
+tbl.aic
+
+# Save the table as a PNG image
+gtsave(tbl.aic, here::here("Figures", "model_fits_aic.png"))
+
+# get colour code
+col_best_mod = RColorBrewer::brewer.pal(n = 8, name = "Dark2")[8]
+
+# Plot for low pH
+low_pH_model_preds_plot <- ggplot(low_pH_model_preds, aes(temp, .fitted)) +
+  geom_point(aes(Temp_Treatment, rate), data = low_pH) +  # Use data = low_pH
+  geom_line(aes(group = model_name), col = 'grey50', alpha = 0.5) +
+  geom_line(data = filter(low_pH_model_preds, model_name == low_pH_best_model), col = "cyan3") +
+  geom_label_repel(aes(temp, .fitted, label = model_name), fill = 'white', segment.size = 0.5,
+                   segment.colour = 'black', nudge_x=-1, nudge_y = 15,
+                   data = filter(low_pH_model_labs, model_name == low_pH_best_model), col = col_best_mod) +
+  common_theme +
+  theme(plot.subtitle = element_text(hjust = 0.5)) +
+  scale_x_continuous(breaks = seq(12, 26, by = 2)) +
+  labs(x = xlab,
+       y = ylab,
+       title = 'Thermal Performance Curve Model', 
+       subtitle='Ambient pH') +
+  geom_hline(aes(yintercept = 0), linetype = 2)
+
+# Plot for high pH
+high_pH_model_preds_plot <- ggplot(high_pH_model_preds, aes(temp, .fitted)) +
+  geom_point(aes(Temp_Treatment, rate), data = high_pH) +  # Use data = high_pH
+  geom_line(aes(group = model_name), col = 'grey50', alpha = 1) +
+  geom_line(data = filter(high_pH_model_preds, model_name == high_pH_best_model), col = "orange") +
+  geom_label_repel(aes(temp, .fitted, label = model_name), fill = 'white', segment.size = 0.5,
+                   segment.colour = 'black', nudge_x=-1, nudge_y = 15,
+                   data = filter(high_pH_model_labs, model_name == high_pH_best_model), col = col_best_mod) +
+  common_theme +
+  theme(plot.subtitle = element_text(hjust = 0.5)) +
+  scale_x_continuous(breaks = seq(12, 26, by = 2)) +
+  labs(x = xlab,
+       y = ylab,
+       title =  NULL,
+       subtitle='Ambient pH') +
+  geom_hline(aes(yintercept = 0), linetype = 2)
+
+# Combine plots vertically
+combined_model_fits <- low_pH_model_preds_plot / high_pH_model_preds_plot
+combined_model_fits
+
+# Save combined plots to "Figures" folder using here
+ggsave(here::here("Figures", "combined_model_fits.png"), combined_model_fits, width = 10, height = 10)
+```
+
+Choose the Sharpe Schoolfield model(high) because it had the lowest AIC values for 7.7 and 8.0 pH, collectively and was a biological model used for ectotherms that fit the curve correctly. 
+
+# Fitting the Sharpe-Schoolfield Model to Respiration Rates Across Temperature
+
+```{r, message=FALSE}
+# Sharpe-Schoolfield Thermal Performance Curve
+
+
+#load in the data set and select for temperature, rate, and pH treatment
+respo.rates.tpc <- respo.rates.dataset %>% 
+  mutate(rate=umolO2.gram.hr, temp=Temp.C) %>%
+  dplyr::select(Temp_Treatment, pH_Treatment, temp, rate) 
+
+# keeping just a single curve
+low_pH <- filter(respo.rates.tpc, pH_Treatment == 'Low') %>% 
+  dplyr::select(-Temp_Treatment)
+high_pH <- filter(respo.rates.tpc, pH_Treatment == 'Ambient') %>% 
+  dplyr::select(-Temp_Treatment)
+
+# Fit the Sharpe-Schoolfield model for low pH
+sharpe_schoolfield_model_low <- nest(low_pH, data = c(temp, rate)) %>%
+  mutate(sharpeschoolhigh = purrr::map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                        data = .x,
+                        iter = c(4,4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         # create new temperature data
+         low_pH_new_data = purrr::map(data, ~tibble(temp = seq(min(.x$temp), max(.x$temp), length.out = 100))),
+         # predict over that data,
+         low_pH_preds =  map2(sharpeschoolhigh, low_pH_new_data, ~augment(.x, newdata = .y)))
+
+# unnest predictions
+low_pH_preds <- dplyr::select(sharpe_schoolfield_model_low, low_pH_preds)  %>% unnest(low_pH_preds) %>% 
+  mutate(pH_Treatment="Low")
+
+# Fit the Sharpe-Schoolfield model for high pH
+sharpe_schoolfield_model_high <- nest(high_pH, data = c(temp, rate)) %>%
+  mutate(sharpeschoolhigh = purrr::map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                        data = .x,
+                        iter = c(4,4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE)),
+         # create new temperature data
+         high_pH_new_data = purrr::map(data, ~tibble(temp = seq(min(.x$temp), max(.x$temp), length.out = 100))),
+         # predict over that data,
+         high_pH_preds =  map2(sharpeschoolhigh, high_pH_new_data, ~augment(.x, newdata = .y)))
+
+# unnest predictions
+high_pH_preds <- dplyr::select(sharpe_schoolfield_model_high, high_pH_preds) %>% unnest(high_pH_preds) %>% 
+  mutate(pH_Treatment="Ambient")
+
+#Joining the data together for plotting 
+TPC_preds <- full_join(low_pH_preds, high_pH_preds)
+
+
+# plotting TPC for Sharpe-Schoolfield (high activation) model 
+ggplot() +
+  geom_line(aes(temp, .fitted, group=pH_Treatment, color=pH_Treatment), TPC_preds) +
+  geom_point(aes(temp, rate, group=pH_Treatment, color=pH_Treatment, fill=pH_Treatment), respo.rates.tpc, size = 1.5, shape = 21, alpha=0.75) +
+  facet_wrap(~pH_Treatment) +
+  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), guide = "none") +
+  scale_fill_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), guide = "none") +
+  common_theme +
+  labs(x = xlab,
+       y = ylab) + 
+  scale_y_continuous(breaks = seq(0, 125, 25), limits=c(0,110)) +
+  scale_x_continuous(breaks = seq(12, 26, 2), limits=c(12,26.5), position = "bottom") +
+  geom_hline(yintercept = 0, linetype = 2)
+
+```
+
+
+# Bootstrapping the Sharpe-Schoolfield Model to Respiration Rates Across Temperature
+
+```{r, message=FALSE}
+# Fit the Sharpe-Schoolfield model for high pH using nmls LM prior to bootstrap
+low_pH_fit_nlsLM <- minpack.lm::nlsLM(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                        data = low_pH,
+                        start = coef(sharpe_schoolfield_model_low$sharpeschoolhigh[[1]]),
+                        lower = get_lower_lims(low_pH$temp, low_pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(low_pH$temp, low_pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                        weights = rep(1, times = nrow(low_pH)), 
+                        na.action=na.exclude,
+                        control = nls.control(maxiter = 1000, tol = 1e-6, minFactor = 1e-8, warnOnly = TRUE))
+
+# Fit the Sharpe-Schoolfield model for high pH using nmls LM prior to bootstrap
+high_pH_fit_nlsLM <- minpack.lm::nlsLM(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                        data = high_pH,
+                        start = coef(sharpe_schoolfield_model_high$sharpeschoolhigh[[1]]),
+                        lower = get_lower_lims(high_pH$temp, high_pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(high_pH$temp, high_pH$rate, model_name = 'sharpeschoolhigh_1981'),
+                        weights = rep(1, times = nrow(high_pH)),
+                        na.action=na.exclude,
+                        control = nls.control(maxiter = 1000, tol = 1e-6, minFactor = 1e-8, warnOnly = TRUE))
+
+# bootstrap technique case versus residual bootstrapping 
+# using residual resampling due to decreased standard error 
+
+##  bootstrap using case resampling
+low_pH_boot_case <- Boot(low_pH_fit_nlsLM, method = 'case', R=999)
+high_pH_boot_case <- Boot(high_pH_fit_nlsLM, method = 'case', R=999)
+
+## bootstrapping using residual resampling 
+low_pH_boot_residual <- Boot(low_pH_fit_nlsLM, method = 'residual', R=999) 
+high_pH_boot_residual <- Boot(high_pH_fit_nlsLM, method = 'residual', R=999) 
+
+ # choose bootstrapping through residual due to lower standard error
+low_pH_boot_residual_preds <- low_pH_boot_residual$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = 1:n()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(low_pH$temp), max(low_pH$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = sharpeschoolhigh_1981(temp, r_tref, e, eh, th, tref = 15)) %>% 
+  mutate(pH_Treatment="Low")
+
+# predict over new data
+high_pH_boot_residual_preds <- high_pH_boot_residual$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = 1:n()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(high_pH$temp), max(high_pH$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = sharpeschoolhigh_1981(temp, r_tref, e, eh, th, tref = 15)) %>% 
+  mutate(pH_Treatment="Ambient")
+
+# calculate bootstrapped confidence intervals
+low_pH_boot_residual_CI_preds <- group_by(low_pH_boot_residual_preds, temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975),
+            .groups = 'drop') %>% 
+  mutate(pH_Treatment = "Low")
+
+# calculate bootstrapped confidence intervals
+high_pH_boot_residual_CI_preds <- group_by(high_pH_boot_residual_preds, temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975),
+            .groups = 'drop') %>% 
+  mutate(pH_Treatment = "Ambient")
+
+
+TPC_boot_residual_preds <- full_join(low_pH_boot_residual_preds, high_pH_boot_residual_preds)
+TPC_boot_residual_CI_preds <- full_join(low_pH_boot_residual_CI_preds, high_pH_boot_residual_CI_preds)
+
+# Plotting the Sharpe-Schoolfield Model (Confidence Intervals and Model Predictions)
+prediction_plots <- ggplot() +
+  geom_point(aes(temp, rate, group=pH_Treatment, color=pH_Treatment), respo.rates.tpc, size = 1.1) +
+  geom_line(aes(temp, pred, group = iter, color=pH_Treatment), TPC_boot_residual_preds, linewidth=0.5, alpha = 0.0095) +
+  geom_line(aes(temp, .fitted, group=pH_Treatment, color=pH_Treatment), TPC_preds, linewidth=1) +
+  facet_wrap(~pH_Treatment) +
+  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "darkorange"), name = "pH Treatment") +
+  common_theme +
+  theme(
+    strip.text.x = element_blank(),  # This will remove the facet labels
+    legend.position = "top",
+    legend.direction = "horizontal",
+    legend.text = element_text(size = 12)
+  ) +
+  labs(x = xlab, y = ylab) + 
+  scale_x_continuous(breaks = seq(12, 26, 2), expand = c(0, 0)) +
+  scale_y_continuous(breaks = seq(0, 120, 30), limits = c(0, 120), expand = c(0, 0)) +
+  geom_hline(yintercept = 0, linetype = 2) 
+
+CI_plots <- ggplot() +
+  geom_point(aes(temp, rate, group = pH_Treatment, color = pH_Treatment), data = respo.rates.tpc, size = 1.1) +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper, fill = pH_Treatment), data = TPC_boot_residual_CI_preds, alpha = 0.2) +
+  geom_line(aes(temp, .fitted, group = pH_Treatment, color = pH_Treatment), data = TPC_preds) +
+  geom_line(aes(temp, conf_lower, group = pH_Treatment, color = pH_Treatment),
+            data = TPC_boot_residual_CI_preds, linetype = "dashed", size = 0.5) +
+  geom_line(aes(temp, conf_upper, group = pH_Treatment, color = pH_Treatment),
+            data = TPC_boot_residual_CI_preds, linetype = "dashed", size = 0.5) +
+  facet_wrap(~pH_Treatment) +
+  scale_fill_manual(values = c("Low" = "cyan3", "Ambient" = "darkorange"), name = "pH Treatment") +
+  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "darkorange"), name = "pH Treatment") +
+  common_theme +
+  theme(
+    strip.text.x = element_blank(),  # This will remove the facet labels
+    legend.position = "top",
+    legend.direction = "horizontal",
+    legend.text = element_text(size = 12)
+  ) +
+  labs(x = xlab, y = ylab) + 
+  scale_x_continuous(breaks = seq(12, 26, 2), expand = c(0, 0)) +
+  scale_y_continuous(breaks = seq(0, 100, 25), expand = c(0, 2)) +
+  geom_hline(yintercept = 0, linetype = 2) 
+  
+
+print(prediction_plots)
+print(CI_plots)
+
+# Save the plots as a PNG file
+ggsave(here::here("Figures", "TPC_final_plot.png"), prediction_plots, width = 6, height = 4, units = "in")
+ggsave(here::here("Figures", "TPC_CI_plot.png"), CI_plots, width = 6, height = 4, units = "in")
+
+```
+```{r}
+# Extract coefficients from the model objects
+low_pH_coefficients <- tidy(low_pH_fit_nlsLM) %>% mutate(pH_condition = "low_pH")
+high_pH_coefficients <- tidy(high_pH_fit_nlsLM) %>% mutate(pH_condition = "high_pH")
+low_pH_boot_resid <- tidy(low_pH_boot_residual) %>% mutate(pH_condition = "low_pH")
+high_pH_boot_resid <- tidy(high_pH_boot_residual) %>% mutate(pH_condition = "high_pH")
+
+low_pH_boot_resid <-  low_pH_boot_resid %>% mutate(estimate = statistic, boot.std.error = std.error)
+high_pH_boot_resid <-  high_pH_boot_resid %>% mutate(estimate = statistic, boot.std.error = std.error)
+
+pH_coefficients <- full_join(low_pH_coefficients, high_pH_coefficients) 
+boot_resid <- full_join(low_pH_boot_resid, high_pH_boot_resid) %>% dplyr::select(-statistic, -std.error)
+summary_coefficients <- left_join(pH_coefficients, boot_resid) %>% dplyr::select(-std.error, -statistic) %>% 
+  dplyr::select(pH_condition, term, estimate, boot.std.error, bias, p.value)
+
+
+# Create gt table
+# Create gt table
+# Create a gt table
+# Create gt table
+# Create gt table
+summary_table <- summary_coefficients %>%
+  gt() %>%
+  tab_header(
+    title = "Summary of Coefficient Estimates for the Sharpe-Schoolfield Model (High Activation)",
+    subtitle = "Low pH and Ambient pH Conditions"
+  ) %>%
+  cols_label(
+    pH_condition = "pH Condition",
+    term = "Parameter",
+    estimate = "Estimate",
+    boot.std.error = "Bootstrap Std. Error",
+    p.value = "P-Value",
+    bias = "Bias"
+  ) %>%
+  tab_spanner(
+    label = "Conditions",
+    columns = vars(pH_condition, term)
+  ) %>%
+  fmt_number(
+    columns = vars(estimate, p.value, bias, boot.std.error),
+    decimals = 2
+  ) %>%
+  tab_spanner(
+    label = "Coefficient Estimates",
+    columns = vars(estimate, p.value)
+  ) %>%
+  tab_spanner(
+    label = "Bootstrap Estimates",
+    columns = vars(bias, boot.std.error)
+  ) %>% 
+  tab_options(
+    table.width = "100%",
+    column_labels.font.size = px(12),
+    heading.title.font.size = px(14),
+    heading.subtitle.font.size = px(12),
+    table.font.size = px(12),
+    table.font.color = "black"
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body()
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold", color = "black", align = "center"),  # Center align column titles
+    locations = cells_column_labels()
+  )
+
+
+# Print the table
+summary_table
+gtsave(summary_table, file = here::here("Figures", "summary_table.png"))
+
+```
+
+
+```{r, message=FALSE}
+image 
+print(CI_plots)
+print(prediction_plots)
+
+# Save the plots as a PNG file
+ggsave(here::here("Figures", "TPC_final_plot.png"), prediction_plots, width = 10, height = 10, units = "in")
+ggsave(here::here("Figures", "TPC_CI_plot.png"), CI_plots, width = 10, height = 10, units = "in")
+```
+
+
+# Calculating Parameters and Confidence Intervals for the Sharpe-Schoolfield Model
+
+```{r}
+library(MASS)
+
+# Calculating Parameters for fitted low pH model 
+param_low_pH <- broom::tidy(low_pH_fit_nlsLM) %>%
+  dplyr::select(param = term, estimate) 
+
+# CIs from residual  resampling
+ci_low_pH_residual <- confint(low_pH_boot_residual, method = 'bca', level = 0.95) %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'residual bootstrap')
+
+# CIs from residual resampling
+ci_param_low_pH <- bind_rows(ci_low_pH_residual) %>% 
+  left_join(param_low_pH) %>% 
+  mutate(pH_Treatment = "Low")
+
+# Calculating Parameters for fitted high pH model
+param_high_pH <- broom::tidy(high_pH_fit_nlsLM) %>%
+  dplyr::select(param = term, estimate)
+
+# CIs from residual resampling
+ci_high_pH_residual <- confint(high_pH_boot_residual, method = 'bca', level = 0.95) %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'residual bootstrap')
+
+# CIs from residual resampling high pH
+ci_param_high_pH <- bind_rows(ci_high_pH_residual) %>% 
+  left_join(param_high_pH) %>% 
+  mutate(pH_Treatment = "Ambient")
+
+# Combine the confidence intervals for low and high pH
+ci_param <- bind_rows(ci_param_low_pH, ci_param_high_pH)
+
+ggplot(ci_param, aes(param, estimate, color = pH_Treatment, group = pH_Treatment)) +
+  geom_point(size = 4, position = position_dodge(width = 0.5)) +
+  geom_linerange(aes(ymin = conf_lower, ymax = conf_upper), position = position_dodge(width = 0.5)) +
+  geom_hline(aes(yintercept = conf_lower, color = pH_Treatment), linetype = 2) +
+  geom_hline(aes(yintercept = conf_upper, color = pH_Treatment), linetype = 2) +
+  common_theme +
+  theme_minimal() +
+  facet_wrap(~ param, scales = 'free') +
+  scale_color_manual(values = c("Low" = "cyan4", "Ambient" = "darkorange2")) +
+  scale_x_discrete('') +
+  labs(title = 'Calculation of confidence intervals for TPC parameters')
+```
+
+
+```{r}
+# Calculate parameters for high pH fit
+high_pH_fit_extra_params <- calc_params(high_pH_fit_nlsLM) %>%
+  pivot_longer(everything(), names_to = 'param', values_to = 'estimate') %>%
+  mutate(pH_Treatment = "Ambient") 
+
+high_pH_ci_extra_params <- Boot(high_pH_fit_nlsLM, f = function(x){unlist(calc_params(x))}, 
+  labels = names(calc_params(high_pH_fit_nlsLM)), R = 1000, method = 'residual') %>%
+  confint(.,  method = 'bca', level = 0.95) %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param')  %>%
+  mutate(method = 'residual bootstrap',
+       pH_Treatment = "Ambient")
+
+high_pH_ci_extra_params <- left_join(high_pH_ci_extra_params, high_pH_fit_extra_params)
+  
+# Calculate parameters for low pH fit
+low_pH_fit_extra_params <- calc_params(low_pH_fit_nlsLM) %>%
+  pivot_longer(everything(), names_to = 'param', values_to = 'estimate') %>%
+  mutate(pH_Treatment = "Low")
+
+low_pH_ci_extra_params <- Boot(low_pH_fit_nlsLM, f = function(x){unlist(calc_params(x))},
+  labels = names(calc_params(low_pH_fit_nlsLM)), R = 1000, method = 'residual') %>%
+  confint(.,  method = 'bca', level = 0.95) %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param')  %>%
+  mutate(method = 'residual bootstrap',
+       pH_Treatment = "Low")
+
+low_pH_ci_extra_params <- left_join(low_pH_ci_extra_params, low_pH_fit_extra_params)
+
+# Combine the confidence intervals for low and high pH
+ci_extra_param <- bind_rows(low_pH_ci_extra_params, high_pH_ci_extra_params)
+
+# Merge and filter
+ci_parameters <- full_join(ci_param, ci_extra_param) %>% 
+  filter(param %in% c("e", "eh", "breadth", "rmax", "topt", "ctmax"))
+
+# Define scientific notations
+sci_notations <- list(
+  e = expression(Activation~Energy~(paste(E))),
+  eh = expression(Deactivation~Energy~(paste(E[h]))),
+  breadth = expression(Thermal~Breadth~(paste(T[Br]))),
+  rmax = expression(Maximum~Rate~(paste(R[max]))),
+  topt = expression(Thermal~Optimum~(paste(T[opt]))),
+  ctmax =  expression(Thermal~Maximum~(paste(CT[max])))
+)
+
+# Apply labels and notations to ci_parameters
+ci_parameters$param_sci <- sci_notations[ci_parameters$param]
+
+# Convert expressions to strings suitable for ggplot2 without the "expression" wrapper
+ci_parameters$param_sci <- sapply(ci_parameters$param_sci, function(item) {
+  if (is.expression(item)) {
+    # Deparse the inner expression to avoid "expression()" wrapper
+    return(deparse(item[[1]]))
+  } else {
+    # Already a plain string; return as is
+    return(item)
+  }
+})
+
+# Ordering based on scientific notations
+ordered_sci_notations <- names(sci_notations)
+ci_parameters <- ci_parameters[order(match(ci_parameters$param, ordered_sci_notations)),]
+
+# Reset row numbers
+ci_parameters <- ci_parameters %>% 
+  mutate(row_number = row_number())
+
+# Step 1: Data Preprocessing
+# Calculate the min and max confidence interval values for each param_sci to limit the figure upwards and downwards
+ci_parameters %>%
+  group_by(param_sci) %>%
+  summarise(
+    range_ci = max(conf_upper, na.rm = TRUE) - min(conf_lower, na.rm = TRUE),  # Determine the range of CI for each parameter
+    min_conf_lower = floor(min(conf_lower, na.rm = TRUE)) - (range_ci * 0.05),  # Expand lower limit based on the CI range
+    max_conf_upper = ceiling(max(conf_upper, na.rm = TRUE)) + (range_ci * 0.17)  # Expand upper limit based on the CI range
+  ) -> conf_limits
+# Join the limits back to the original data for plotting
+ci_parameters <- left_join(ci_parameters, conf_limits, by = "param_sci") 
+
+significant <- subset(ci_parameters, param == "rmax") %>% dplyr::select(param, param_sci, pH_Treatment, conf_upper) %>% mutate(conf_upper=conf_upper+1.5)
+
+common_theme_2 <- common_theme+ theme(legend.position = "right")
+ggplot(ci_parameters, aes(x = pH_Treatment, y = estimate, color = pH_Treatment, group = param_sci)) +
+  geom_hline(data = conf_limits, aes(yintercept = min_conf_lower, group = param_sci), alpha = 0) +
+  geom_hline(data = conf_limits, aes(yintercept = max_conf_upper, group = param_sci), alpha = 0) +
+  geom_errorbar(aes(ymin = conf_lower, ymax = conf_upper), width = 0.2, size = 0.5) +
+  geom_point(size = 1.8, stroke = 1) +
+  geom_text(data = significant,
+            aes(label = "*", x = pH_Treatment, y = conf_upper), color = "black", size = 5) +
+  facet_wrap(~factor(param_sci, levels = unique(ci_parameters$param_sci)), scales = 'free_y', labeller = label_parsed, 
+             strip.position = "top", nrow = 3, ncol = 3) +
+  labs(
+    y = expression("Parameter Estimate (± 95% CI Range)"),
+    x = NULL,  # Removing x-axis label
+    legend.title = expression("pH Treatment")
+  ) +
+  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "darkorange"),  name="pH Treatment") +
+  common_theme_2 +
+  theme(
+    strip.text.x = element_text(size = 11),
+    legend.position = "bottom",
+    panel.grid.major = element_line(color = "gray90", size = 0.5),
+    panel.grid.minor = element_line(color = "gray90", size = 0.25),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.5),
+    panel.background = element_rect(fill = "white", color = "white"),
+    axis.text.x = element_text(margin = margin(t = 10))  # Adjust if needed
+  ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(min.n = 4), oob = scales::oob_squish)
+
+ggsave(here::here("Figures", "TPC_parameters.png"), width = 8, height = 6, units = "in", dpi=1200)
+
+```
+# Thermal optimum analysis for temeprature distributions 
+
+```{r}
+# extracting Topt 
+topt <- ci_parameters %>% filter(param == "topt") %>% summarise(topt=mean(estimate, na.rm = TRUE))
+# Define 'topt' as a single numeric value, not as a column, for ease of use in ggplot
+topt_value <- topt$topt
+
+# Read the CSV file
+newport_temp <- read_csv(here("Data", "Site_Data", "NewportBeach_TEMP_1924-2023.csv"))
+
+# Data Cleaning and Transformation
+# Filter data based on TEMP_FLAG and SURF_TEMP_C values
+filtered_temp_data <- newport_temp %>%
+  filter(is.na(TEMP_FLAG) | TEMP_FLAG %in% c(0, 5, 6)) %>%
+  filter(between(SURF_TEMP_C, 5, 35)) %>%
+  mutate(Date = make_date(YEAR, MONTH, DAY)) %>%
+  filter(between(Date, as.Date("2020-01-01"), as.Date("2024-01-01"))) %>% 
+  dplyr::select(Date, Temperature = SURF_TEMP_C)
+
+# Calculate Daily Mean Temperature
+daily_temp_stats <- filtered_temp_data %>%
+  group_by(Date) %>% 
+  summarise(Mean_Temp = mean(Temperature, na.rm = TRUE)) %>% 
+  mutate(topt = as.numeric(topt_value)) %>% 
+  na.omit()
+
+# Extend daily_temp_stats to include future scenarios within the same dataset
+extended_temp_stats <- daily_temp_stats %>%
+  mutate(Scenario = "Distribution of Sea Surface Temperatures",
+         Adjusted_Temp = Mean_Temp, 
+         color=ifelse(Adjusted_Temp > topt, "darkorange2","gold1")) %>%
+  bind_rows(
+    daily_temp_stats %>% 
+      mutate(Scenario = "Distribution of Sea Surface Temperatures (+2°C)",
+             Adjusted_Temp = Mean_Temp + 2,
+             color=ifelse(Adjusted_Temp > topt, "darkorange2", "gold1")),
+    daily_temp_stats %>%
+      mutate(Scenario = "Distribution of Sea Surface Temperatures (+4°C)",
+             Adjusted_Temp = Mean_Temp + 4,
+             color=ifelse(Adjusted_Temp > topt, "darkorange2", "gold1"))
+  ) %>%
+  mutate(Exceeds_Topt = Adjusted_Temp > topt_value, 
+         Topt=ifelse(Adjusted_Temp > topt_value, "Exceeds T_opt", "Below T_opt")) %>% 
+  na.omit(Adjusted_Temp)
+
+# To calculate the percentage exceeding 'topt' for each 'Scenario'
+exceeds_topt_percentages <- extended_temp_stats %>%
+  group_by(Scenario) %>%
+  summarise(
+    Percentage = mean(Exceeds_Topt) * 100 # This gives you the percentage
+  )
+
+# View the percentages
+print(exceeds_topt_percentages)
+
+# Adjust the Scenario ordering
+extended_temp_stats$Scenario <- factor(extended_temp_stats$Scenario, 
+                                       levels = c("Distribution of Sea Surface Temperatures",
+                                                  "Distribution of Sea Surface Temperatures (+2°C)",
+                                                  "Distribution of Sea Surface Temperatures (+4°C)"))
+
+# Calculate mean and standard deviation for each scenario
+scenario_stats <- extended_temp_stats %>%
+  group_by(Scenario) %>%
+  summarise(mean = mean(Adjusted_Temp), sd = sd(Adjusted_Temp), Total_Count = n())
+
+max_count <- max(scenario_stats$Total_Count)
+ratio <- 1 / max_count
+
+common_theme_2 <- common_theme + theme(legend.position = "bottom")
+
+ggplot(extended_temp_stats, aes(x = Adjusted_Temp, stat=as.factor(Scenario))) +
+  geom_histogram(aes(fill = as.factor(Topt)), color = "black", binwidth = 0.2, linewidth = 0.1) +
+  facet_wrap(~Scenario, scales = "free_y", ncol = 1) +
+  geom_vline(data = scenario_stats, aes(xintercept = mean), colour = "red2", linetype = "dashed", size = 0.8) +
+  geom_vline(xintercept = topt_value, color = "red3", linetype = "dashed", size = 0.8) +
+    labs(
+    x = "Sea Surface Temperature (°C)",
+    y = "Frequency",
+    fill = "Condition",  # Set the legend title for 'fill'
+    mean_temp = expression("Mean Temperature"),
+    topt = expression(T["opt"])
+  ) +
+   scale_fill_manual(values = c(`Exceeds T_opt` = "darkorange2", `Below T_opt` = "gold1"), name = "",
+                    labels = c(expression(paste("Exceeds T"[opt])), expression(paste("Below T"[opt])))) +
+  scale_x_continuous(expand=c(0,0), breaks = seq(10, 30, 2)) +
+  scale_y_continuous(expand=c(0,0), breaks = seq(0, 100, 15), limits = c(0, 60),
+                     sec.axis = sec_axis(~ . * ratio, name = "Proportion", labels = scales::label_percent())) +
+  common_theme_2
+
+ggsave(here::here("Figures", "Temperature_Distribution.png"), width = 8, height = 6, units = "in")
+
+```
+
+
+
+```{r}
+
+# Estimating Q10 temperature coefficient (thermal sensitivty) for respirometry data 
+ 
+# Estimating Q10 values for low and high pH data 
+respo.rates.Q10 = respirometry::Q10(R_vec=respo.rates.tpc$rate, T_vec=respo.rates.tpc$temp)
+
+respo.rates.low = respo.rates.tpc %>% filter(pH_Treatment == "Low")
+respo.rates.low.pH.Q10 = respirometry::Q10(R_vec=respo.rates.low$rate, T_vec=respo.rates.low$temp)
+
+respo.rates.high = respo.rates.tpc %>% filter(pH_Treatment == "Ambient")
+respo.rates.high.pH.Q10 = respirometry::Q10(R_vec=respo.rates.high$rate, T_vec=respo.rates.high$temp)
+
+print(paste("Tegula funebralis (Q10):", respo.rates.Q10))
+print(paste("Tegula funebralis (Low pH Q10):", respo.rates.low.pH.Q10))
+print(paste("Tegula funebralis (High pH Q10):", respo.rates.high.pH.Q10))
+
+# Create a data frame to hold Q10 values
+q10_values <- data.frame(
+  Treatment = c("Tegula funebralis (Overall)", "Tegula funebralis (Low pH)", "Tegula funebralis (High pH)"),
+  Q10 = c(respo.rates.Q10, respo.rates.low.pH.Q10, respo.rates.high.pH.Q10)
+)
+
+# Save the data frame to a CSV file in the Figures directory
+write.csv(q10_values, file = here("Figures", "Tegula_funebralis_Q10_values.csv"), row.names = FALSE)
+```
+
+
+
+
+# Fitting the Sharpe-Schoolfield Model to Weighted Average Respiration Rates Across Temperature
+
+```{r}
+#Averaging Rates by temperature and pH treatment 
+avg.respo.rates.tpc <- respo.rates.dataset %>% 
+  mutate(rate=umolO2.gram.hr, temp=Temp.C) %>%
+  group_by(Temp_Treatment, pH_Treatment) %>% 
+  summarise(., sd = sd(rate),
+            rate = mean(rate),
+            temp = mean(temp),
+            .groups = 'drop') %>% ungroup() %>% 
+  dplyr::select(pH_Treatment, temp, rate, sd)
+
+# keeping just a single curve
+low_pH_mean <- filter(avg.respo.rates.tpc, pH_Treatment == 'Low') %>% 
+  dplyr::select(-pH_Treatment)
+
+high_pH_mean <- filter(avg.respo.rates.tpc, pH_Treatment == 'Ambient') %>% 
+  dplyr::select(-pH_Treatment)
+
+# Fit the Sharpe-Schoolfield model for low pH
+sharpeschoolhigh_fit_low_pH_mean <- nest(low_pH_mean, data = c(temp, rate, sd)) %>%
+  mutate(sharpeschoolhigh = map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 20),
+                        data = .x,
+                        iter = c(4,4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE,
+                        #including weights for each replicate here
+                        modelweights = 1/sd)))
+
+# get predictions using augment for low pH
+low_pH_mean_newdata <- tibble(temp = seq(min(low_pH_mean$temp), max(low_pH_mean$temp), length.out = 100))
+sharpeschoolhigh_fit_low_pH_mean_preds <- sharpeschoolhigh_fit_low_pH_mean %>%
+  mutate(., preds = map(sharpeschoolhigh, augment, newdata = low_pH_mean_newdata)) %>%
+  mutate(pH_Treatment="Low") %>% 
+  dplyr::select(-sharpeschoolhigh) %>%
+  unnest(preds)
+
+# Fit the Sharpe-Schoolfield model for high pH
+sharpeschoolhigh_fit_high_pH_mean <- nest(high_pH_mean, data = c(temp, rate, sd)) %>%
+  mutate(sharpeschoolhigh = map(data, ~nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 20),
+                        data = .x,
+                        iter = c(4,4,4,4),
+                        start_lower = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') - 10,
+                        start_upper = get_start_vals(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981') + 10,
+                        lower = get_lower_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(.x$temp, .x$rate, model_name = 'sharpeschoolhigh_1981'),
+                        supp_errors = 'Y',
+                        convergence_count = FALSE,
+                        #including weights for each replicate here
+                        modelweights = 1/sd)))
+
+# get predictions using augment for high pH 
+high_pH_mean_newdata <- tibble(temp = seq(min(high_pH_mean$temp), max(high_pH_mean$temp), length.out = 100))
+sharpeschoolhigh_fit_high_pH_mean_preds <- sharpeschoolhigh_fit_high_pH_mean %>%
+  mutate(., preds = map(sharpeschoolhigh, augment, newdata = high_pH_mean_newdata)) %>%
+  mutate(pH_Treatment="Ambient") %>% 
+  dplyr::select(-sharpeschoolhigh) %>%
+  unnest(preds)
+
+high_pH_mean <- high_pH_mean %>% mutate(pH_Treatment = "Ambient")
+low_pH_mean <- low_pH_mean %>% mutate(pH_Treatment = "Low")
+
+# Joining and low and high pH prediction for plotting 
+avg_TPC_rates <- full_join(high_pH_mean, low_pH_mean)
+avg_TPC_preds <- full_join(sharpeschoolhigh_fit_high_pH_mean_preds, sharpeschoolhigh_fit_low_pH_mean_preds)
+
+# plotting TPC for Sharpe-Schoolfield (high activation) model 
+ggplot() +
+  geom_line(aes(temp, .fitted, group=pH_Treatment, color=pH_Treatment), avg_TPC_preds) +
+  geom_linerange(aes(x = temp, ymin = rate - sd, ymax = rate + sd, group=pH_Treatment), avg_TPC_rates) +
+  geom_point(aes(temp, rate, group=pH_Treatment, fill=pH_Treatment), avg_TPC_rates, size = 2, shape = 21) +
+  facet_wrap(~pH_Treatment) +
+  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), guide = "none") +
+  scale_fill_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), guide = "none") +
+  theme_bw(base_size = 12) +
+  common_theme +
+  labs(x = xlab,
+       y = ylab) + 
+  scale_y_continuous(breaks = seq(0, 125, 25), limits=c(0,110)) +
+  scale_x_continuous(breaks = seq(12, 26, 2), limits=c(12,26.5), position = "bottom") +
+  geom_hline(yintercept = 0, linetype = 2)
+
+```
+
+# Bootstrapping the Sharpe-Schoolfield Model to Weighted Average Respiration Rates Across Temperature
+
+```{r}
+
+# Fit the Sharpe-Schoolfield model for low pH using nmls model prior to bootstrap
+low_pH_mean_fit_nlsLM <- minpack.lm::nlsLM(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                        data = low_pH_mean,
+                        start = coef(sharpeschoolhigh_fit_low_pH_mean$sharpeschoolhigh[[1]]),
+                        lower = get_lower_lims(low_pH_mean$temp, low_pH_mean$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(low_pH_mean$temp, low_pH_mean$rate, model_name = 'sharpeschoolhigh_1981'),
+                        weights = 1/sd)
+
+# perform bootstrapping (case versus residual) for low pH
+low_pH_mean_case_bootstrap <- Boot(low_pH_mean_fit_nlsLM, method = 'case', R=999)
+low_pH_mean_residual_bootstrap <- Boot(low_pH_mean_fit_nlsLM, method = 'residual', R=999)  # using residual bootstrapping due to lower standard error 
+
+# predict over new data
+low_pH_mean_residual_bootstrap_preds <- low_pH_mean_residual_bootstrap$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = 1:n()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(low_pH_mean$temp), max(low_pH_mean$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = sharpeschoolhigh_1981(temp, r_tref, e, eh, th, tref=15)) %>% 
+  mutate(pH_Treatment = "Low")
+
+# calculate bootstrapped confidence intervals
+low_pH_mean_residual_bootstrap_CI_preds <- group_by(low_pH_mean_residual_bootstrap_preds, temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975),
+            .groups = 'drop') %>% 
+  mutate(pH_Treatment = "Low")
+
+# Fit the Sharpe-Schoolfield model for high pH using nmls model prior to bootstrap
+high_pH_mean_fit_nlsLM <- minpack.lm::nlsLM(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                        data = high_pH_mean,
+                        start = coef(sharpeschoolhigh_fit_high_pH_mean$sharpeschoolhigh[[1]]),
+                        lower = get_lower_lims(high_pH_mean$temp, high_pH_mean$rate, model_name = 'sharpeschoolhigh_1981'),
+                        upper = get_upper_lims(high_pH_mean$temp, high_pH_mean$rate, model_name = 'sharpeschoolhigh_1981'),
+                        weights = 1/sd)
+
+# perform bootstrapping (case versus residual) for high pH
+high_pH_mean_case_bootstrap <- Boot(high_pH_mean_fit_nlsLM, method = 'case', R=999)
+high_pH_mean_residual_bootstrap <- Boot(high_pH_mean_fit_nlsLM, method = 'residual', R=999)
+
+# predict over new data
+high_pH_mean_residual_bootstrap_preds <- high_pH_mean_residual_bootstrap$t %>%
+  as.data.frame() %>%
+  drop_na() %>%
+  mutate(iter = 1:n()) %>%
+  group_by_all() %>%
+  do(data.frame(temp = seq(min(high_pH_mean$temp), max(high_pH_mean$temp), length.out = 100))) %>%
+  ungroup() %>%
+  mutate(pred = sharpeschoolhigh_1981(temp, r_tref, e, eh, th, tref=15)) %>% 
+  mutate(pH_Treatment = "Ambient")
+
+# calculate bootstrapped confidence intervals
+high_pH_mean_residual_bootstrap_CI_preds <- group_by(high_pH_mean_residual_bootstrap_preds, temp) %>%
+  summarise(conf_lower = quantile(pred, 0.025),
+            conf_upper = quantile(pred, 0.975),
+            .groups = 'drop') %>% 
+  mutate(pH_Treatment = "Ambient")
+
+# joining residual bootstrap preds and confidence intervals (95%)
+residual_bootstrap_preds <- full_join(high_pH_mean_residual_bootstrap_preds, low_pH_mean_residual_bootstrap_preds)
+residual_bootstrap_CI_preds <- full_join(high_pH_mean_residual_bootstrap_CI_preds, low_pH_mean_residual_bootstrap_CI_preds)
+
+# plotting TPC for Sharpe-Schoolfield (high activation) model 
+avg_TPC_CI_plot <- ggplot() +
+  geom_line(aes(temp, .fitted, group=pH_Treatment, color=pH_Treatment), avg_TPC_preds) +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper, fill=pH_Treatment), residual_bootstrap_CI_preds, alpha = 0.2) +
+  geom_linerange(aes(x = temp, ymin = rate - sd, ymax = rate + sd, group=pH_Treatment), avg_TPC_rates) +
+  geom_point(aes(temp, rate, group=pH_Treatment, fill=pH_Treatment), avg_TPC_rates, size = 2, shape = 21) +
+  facet_wrap(~pH_Treatment) +
+  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), guide = "none") +
+  scale_fill_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), guide = "none") +
+  theme_bw(base_size = 12) +
+  common_theme +
+  labs(x = xlab,
+       y = ylab) + 
+  scale_y_continuous(breaks = seq(0, 125, 25), limits=c(0,100)) +
+  scale_x_continuous(breaks = seq(12, 26, 2), limits=c(12,26.5), position = "bottom") +
+  geom_hline(yintercept = 0, linetype = 2)
+
+# plotting TPC for Sharpe-Schoolfield (high activation) model 
+avg_TPC_predictions_plot <-ggplot() +
+  geom_line(aes(temp, .fitted, group=pH_Treatment, color=pH_Treatment), avg_TPC_preds) +
+  geom_line(aes(temp, pred, group = iter, col=pH_Treatment), residual_bootstrap_preds, alpha = 0.008) +
+  geom_linerange(aes(x = temp, ymin = rate - sd, ymax = rate + sd, group=pH_Treatment), avg_TPC_rates) +
+  geom_point(aes(temp, rate, group=pH_Treatment, fill=pH_Treatment), avg_TPC_rates, size = 2, shape = 21) +
+  facet_wrap(~pH_Treatment) +
+  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), guide = "none") +
+  scale_fill_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), guide = "none") +
+  theme_bw(base_size = 12) +
+  common_theme +
+  labs(x = xlab,
+       y = ylab) + 
+  scale_y_continuous(breaks = seq(0, 125, 25), limits=c(0,100)) +
+  scale_x_continuous(breaks = seq(12, 26, 2), limits=c(12,26.5), position = "bottom") +
+  geom_hline(yintercept = 0, linetype = 2)
+
+combined_avg_plots <- ggplot() +
+  geom_line(aes(temp, .fitted, group=pH_Treatment, color=pH_Treatment), avg_TPC_preds) +
+  geom_ribbon(aes(temp, ymin = conf_lower, ymax = conf_upper, fill=pH_Treatment), residual_bootstrap_CI_preds, alpha = 0.2) +
+  geom_line(aes(temp, pred, group = iter, col=pH_Treatment), residual_bootstrap_preds, alpha = 0.008) +
+  geom_linerange(aes(x = temp, ymin = rate - sd, ymax = rate + sd, group=pH_Treatment), avg_TPC_rates) +
+  geom_point(aes(temp, rate, group=pH_Treatment, fill=pH_Treatment), avg_TPC_rates, size = 2, shape = 21) +
+  facet_wrap(~pH_Treatment) +
+  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), guide = "none") +
+  scale_fill_manual(values = c("Low" = "cyan3", "Ambient" = "orange"), guide = "none") +
+  theme_bw(base_size = 12) +
+  common_theme +
+  labs(x = xlab,
+       y = ylab) + 
+  scale_y_continuous(breaks = seq(0, 125, 25), limits=c(0,100)) +
+  scale_x_continuous(breaks = seq(12, 26, 2), limits=c(12,26.5), position = "bottom") +
+  geom_hline(yintercept = 0, linetype = 2)
+
+print(avg_TPC_CI_plot)
+print(avg_TPC_predictions_plot)
+print(combined_avg_plots)
+
+# Save the plots as a PNG file
+ggsave(here::here("Figures", "TPC_CI_combined_weighted_avg_plot.png"), combined_avg_plots, width = 10, height = 10, units = "in")
+
+```
+
+
+
+```{r}
+library(MASS)
+# get parameters of fitted model
+low_pH_params <- broom::tidy(low_pH_mean_fit_nlsLM)  %>%
+  dplyr::select(param = term, estimate) 
+  
+# CIs from residual resampling
+ci_low_pH_residual <- low_pH_mean_residual_bootstrap %>%
+  confint(., method = 'bca', level = 0.95) %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'residual bootstrap')
+
+low_pH_params <-left_join(low_pH_params, ci_low_pH_residual) %>%
+  mutate(pH_Treatment = "Low")
+
+# residul Bootstrapping Extracted Parameters
+low_pH_extra_params <- calc_params(low_pH_mean_fit_nlsLM) %>%
+  pivot_longer(everything(), names_to =  'param', values_to = 'estimate') %>% 
+  filter(param != 'th', param != 'tref', param != 'e', param != "eh", param != "q10") %>%
+  na.omit()
+
+# residual Bootstrapping Extracted Parameters
+ci_low_extra_params_residual <- Boot(low_pH_mean_fit_nlsLM , f = function(x){unlist(calc_params(x))},
+  labels = names(calc_params(low_pH_mean_fit_nlsLM )), R = 999, method = 'residual') %>%
+  confint(., method = 'bca', level = 0.95) %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'residual bootstrap', 
+         pH_Treatment = 'Low')
+
+low_pH_extra_params <-left_join(low_pH_extra_params, ci_low_extra_params_residual) %>%
+  mutate(pH_Treatment = "Low")
+
+full_low_pH_params <- bind_rows(low_pH_params, low_pH_extra_params)
+
+high_pH_params <- broom::tidy(high_pH_mean_fit_nlsLM)  %>%
+  dplyr::select(param = term, estimate)
+
+# CIs from residual resampling
+ci_high_pH_residual <- high_pH_mean_residual_bootstrap %>%
+  confint(., method = 'bca', level = 0.95) %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'residual bootstrap')
+
+high_pH_params <-left_join(high_pH_params, ci_high_pH_residual) %>%
+  
+  mutate(pH_Treatment = "Ambient")
+
+# Case Bootstrapping Extracted Parameters
+high_pH_extra_params <- calc_params(high_pH_mean_fit_nlsLM) %>%
+  pivot_longer(everything(), names_to =  'param', values_to = 'estimate') %>% 
+  filter(param != 'th', param != 'tref', param != 'e', param != "eh", param != "q10") %>%
+  na.omit()
+
+# Case Bootstrapping Extracted Parameters
+ci_high_extra_params_residual <- Boot(high_pH_mean_fit_nlsLM , f = function(x){unlist(calc_params(x))},
+  labels = names(calc_params(high_pH_mean_fit_nlsLM)), R = 999, method = 'residual') %>%
+  confint(., method = 'bca', level = 0.95) %>%
+  as.data.frame() %>%
+  rename(conf_lower = 1, conf_upper = 2) %>%
+  rownames_to_column(., var = 'param') %>%
+  mutate(method = 'residual bootstrap', 
+         pH_Treatment = 'Ambient')
+
+high_pH_extra_params <-left_join(high_pH_extra_params, ci_high_extra_params_residual) %>%
+  
+  mutate(pH_Treatment = "Ambient")
+
+full_high_pH_params <- bind_rows(high_pH_params, high_pH_extra_params)
+
+# Combine the confidence intervals for low and high pH
+
+ci_param <- bind_rows(full_low_pH_params, full_high_pH_params)
+
+ggplot(ci_param, aes(param, estimate, color = pH_Treatment, group = pH_Treatment)) +
+  geom_point(size = 4, position = position_dodge(width = 0.5)) +
+  geom_linerange(aes(ymin = conf_lower, ymax = conf_upper), position = position_dodge(width = 0.5)) +
+  geom_hline(aes(yintercept = conf_lower, color = pH_Treatment), linetype = 2) +
+  geom_hline(aes(yintercept = conf_upper, color = pH_Treatment), linetype = 2) +
+  common_theme +
+  theme_minimal() +
+  facet_wrap(~param, scales = 'free') +
+  scale_color_manual(values = c("Low" = "cyan3", "Ambient" = "orange")) +
+  scale_x_discrete('') +
+  labs(title = 'Calculation of confidence intervals for model parameters')
+
+```
+
+```{r}
+
+```
+
+# Calculating Metablic Information from Respiration Rates
+```{r, Calulcating Metabolic Data}
+
+
+# Estimating Q10 temperature coefficient (thermal sensitivty) for respirometry data 
+ 
+# Estimating Q10 values for low and high pH data 
+respo.rates.Q10 = respirometry::Q10(R_vec=respo.rates.tpc$rate, T_vec=respo.rates.tpc$temp)
+
+respo.rates.low = respo.rates.tpc %>% filter(pH_Treatment == "Low")
+respo.rates.low.pH.Q10 = respirometry::Q10(R_vec=respo.rates.low$rate, T_vec=respo.rates.low$temp)
+
+respo.rates.high = respo.rates.tpc %>% filter(pH_Treatment == "Ambient")
+respo.rates.high.pH.Q10 = respirometry::Q10(R_vec=respo.rates.high$rate, T_vec=respo.rates.high$temp)
+
+print(paste("Tegula funebralis (Q10):", respo.rates.Q10))
+print(paste("Tegula funebralis (Low pH Q10):", respo.rates.low.pH.Q10))
+print(paste("Tegula funebralis (High pH Q10):", respo.rates.high.pH.Q10))
+
+# Calculating mean respiration rate at each temperature
+mean_rates_low <- aggregate(rate ~ temp, data = respo.rates.low, FUN = mean)
+mean_rates_high <- aggregate(rate ~ temp, data = respo.rates.high, FUN = mean)
+
+# Identifying temperature at which respiration rate is maximum
+max_temp_low <- mean_rates_low$temp[which.max(mean_rates_low$rate)]
+max_temp_high <- mean_rates_high$temp[which.max(mean_rates_high$rate)]
+
+# Topt maximum respiration rate
+print(paste("Tegula funebralis (Low pH Topt):", max_temp_low))
+print(paste("Tegula funebralis (High pH Topt):", max_temp_high))
+
+```
+
+
+```{r}
+
+#Calculating Joules and Kilocalories from Respiration Rates using oxyjoulimetric conversions and calorific coefficients
+#calorific coefficients used to convert 
+        #Substrate	J/mg O2	  J/ml O2	  J/mmol O2	     Ref
+        #Carbs   	14.77	      21.06 	  481.86	       Ivlev 1935; Elliot & Davison 1975; Gnaiger 1983 
+        #Lipid	  13.73	      19.58	    447.93	       Ivlev 1935; Elliot & Davison 1975; Gnaiger 1983
+        #Protein	13.61	      19.41	    444.01	       Ivlev 1935; Elliot & Davison 1975; Gnaiger 1983
+        #Average	14.10	      20.11	    460.00         Ivlev 1935; Elliot & Davison 1975; Gnaiger 1983
+
+joule.rates.dataset <- respo.rates.dataset %>%  
+  mutate(J.hr = umolO2.gram.hr * 460.00/1000) %>%  # Energy equivalent of J/mmol of O2 consumed (Elliott and Davison, 1975)
+  mutate(kJ.hr = J.hr / 1000) %>% #this is in mL
+  dplyr::select(Snail_ID, Temp_Treatment, pH_Treatment, Temp.C, kJ.hr, J.hr) %>% 
+  dplyr::select(Snail_ID, Temp_Treatment, pH_Treatment, Temp.C, kJ.hr, J.hr)
+
+joule.rates.dataset <- joule.rates.dataset %>% 
+  mutate(Temp_Treatment = as.factor(Temp_Treatment),
+         pH_Treatment = as.factor(pH_Treatment))
+
+# Perform a two-way ANOVA
+Jhr_model <- lm(log(J.hr) ~ Temp_Treatment * pH_Treatment, data = joule.rates.dataset)
+anova_result <- anova(Jhr_model)
+check_model(Jhr_model) # interactive effect is significant thus we dont need to check main effects
+
+# Tidy up the ANOVA result into a data frame
+anova_df <- tidy(anova_result)
+
+# Convert and format the 'p.value' column to scientific notation
+anova_df <- anova_df %>%
+  mutate(p.value = ifelse(is.na(p.value), NA, sprintf("%.2e", as.numeric(p.value))))
+
+# Print the ANOVA table
+print(anova_result)
+# significant p value (1.101e-08 ***) for temp treatment but not for ph treatment (0.1235)
+
+# Perform a Tukey's HSD test
+tukey_result <- TukeyHSD(aov(log(J.hr) ~ Temp_Treatment * pH_Treatment, data = joule.rates.dataset)) # put a star with low and ambient significantly different 
+
+# Print the Tukey's HSD test
+print(tukey_result)
+
+gt_anova <- gt(anova_df) %>%
+  tab_header(
+    title = "ANOVA Results",
+    subtitle = "Two-way ANOVA for Temperature and pH Treatment"
+  ) %>%
+  tab_spanner(
+    label = "Statistical Metrics",
+    columns = vars(sumsq, meansq, statistic, p.value)
+  ) %>%
+  cols_label(
+    sumsq = "Sum of Squares",
+    meansq = "Mean Square",
+    statistic = "F Value",
+    p.value = "P Value"
+  ) %>%
+  fmt_number(
+    columns = vars(sumsq, meansq, statistic, p.value),
+    decimals = 3
+  ) %>%
+  tab_options(
+    table.font.size = 12,
+    heading.title.font.size = 14,
+    heading.subtitle.font.size = 12,
+    table.font.color = "black"
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body(columns = everything())
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_column_labels(columns = everything())
+  ) %>%
+  tab_footnote(
+    footnote = "Significance codes: 0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1",
+    locations = cells_column_labels(columns = vars(p.value))
+  )
+
+
+
+
+# Tidy up the Tukey's HSD results into a long data frame
+tukey_df <- broom::tidy(tukey_result) 
+
+# Convert and format the 'adj.p.value' column to scientific notation
+tukey_df <- tukey_df %>%
+  filter(adj.p.value < 0.05) %>%
+  mutate(adj.p.value = ifelse(is.na(adj.p.value), NA, sprintf("%.2e", as.numeric(adj.p.value))))  %>%
+  dplyr::select(-term, -null.value)
+# use diff as the mena diffeence (lower 95% conf and upper 95% conf - padj is audjusted value "14:Low-14:Ambient")
+
+relevant_contrasts <- tukey_df %>%
+  filter(grepl(":Low-", contrast) | grepl(":Ambient-", contrast)) %>%
+  mutate(adj.p.value = ifelse(is.na(adj.p.value), NA, sprintf("%.2e", as.numeric(adj.p.value))))
+
+
+# Now create the simplified gt table with the pre-selected data frame
+gt_tukey_simplified <- gt(relevant_contrasts) %>%
+  tab_header(
+    title = "Relevant Tukey's HSD Test Results",
+    subtitle = "Comparisons Between Low and Ambient pH Treatments"
+  ) %>%
+  tab_spanner(
+    label = "Statistical Metrics",
+    columns = c("estimate", "conf.low", "conf.high", "adj.p.value")
+  ) %>%
+  cols_label(
+    contrast = "Contrast",
+    estimate = "Mean Difference",
+    conf.low = "Lower Confidence Limit",
+    conf.high = "Upper Confidence Limit",
+    adj.p.value = "Adjusted P-Value"
+  ) %>%
+  tab_options(
+    table.font.size = 12,
+    heading.title.font.size = 14,
+    heading.subtitle.font.size = 12,
+    table.font.color = "black"
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body(columns = everything())
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_column_labels(columns = everything())
+  )
+
+
+# Export the gt tables as HTML first because gt tables are HTML-based
+gtsave(gt_anova, filename = here("Figures", "anova_results.png"))
+gtsave(gt_tukey_simplified, filename = here::here("Figures", "tukey_hsd_results_simplified.png"))
+
+
+
+
+
+
+# joule rate summary statistics 
+joule.rates.summary <- joule.rates.dataset %>%
+  filter(pH_Treatment != "Sump") %>%
+  group_by(Temp_Treatment, pH_Treatment) %>%
+  summarize(
+    Mean_joule_sec = mean(J.hr),
+    Median_joule_sec = median(J.hr),
+    Min_joule_sec = min(J.hr),
+    Max_joule_sec = max(J.hr),
+    SD_joule_sec = sd(J.hr),
+    SE_joule_sec = sd(J.hr) / sqrt(n()),
+    N_joule_sec = n()
+  ) 
+
+
+
+
+  
+# Print the ANOVA table
+print(joule.rates.summary)
+
+mean_joule_sec <- joule.rates.summary %>%
+  group_by(Temp_Treatment,pH_Treatment) %>%
+  dplyr::select(Temp_Treatment, pH_Treatment, Mean_joule_sec) 
+
+# Pivot the data to have Temp_Treatment as rows and pH_Treatment as columns
+pivot_mean_joule_sec <- pivot_wider(mean_joule_sec, names_from = pH_Treatment, values_from = Mean_joule_sec)
+
+# Calculate the percent difference
+difference_mean_joule_sec <- pivot_mean_joule_sec %>%
+  group_by(Temp_Treatment) %>%
+  mutate(Percent_Difference = (Ambient - Low) / Ambient * 100) %>% 
+  mutate(Percent_Difference = round(Percent_Difference, 2)) %>%
+  mutate(Percent_Difference_n =Percent_Difference) %>% 
+  mutate(Percent_Difference = paste0(Percent_Difference, "%")) %>% ungroup() %>% 
+  mutate(Temp_Treatment = as.character(Temp_Treatment)) %>% 
+  mutate(Temp_Treatment = as.numeric(Temp_Treatment))
+
+ph_joule <- ggplot(joule.rates.dataset, aes(x=Temp_Treatment, y=J.hr, color=pH_Treatment)) +
+  geom_boxplot() +
+  scale_color_manual(values = c("cyan3", "orange"), name="pH Treatment") +
+  labs(title = NULL,
+       x = "Temperature Treatment",
+       y = "Energy Expenditure (J/h)",
+       color = "pH Treatment") +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+ph_percent <- ggplot(difference_mean_joule_sec, aes(x=Temp_Treatment, y=Percent_Difference_n)) +
+  geom_bar(stat="identity", position="dodge") +
+  
+  labs(title = "Percent Difference in Energy Expenditure by Temperature Treatment",
+       x = "Temperature Treatment",
+       y = "Percent Difference (%)") +
+  theme_minimal()
+
+joule_combined <- ph_joule + ph_percent
+
+# Rename columns
+colnames(difference_mean_joule_sec) <- c("Temperature Treatment", "Ambient Energy Expenditure (J/h)", "Low Energy Expenditure (J/h)", "Percent Difference")
+
+
+tbl_joule <- difference_mean_joule_sec %>%
+  gt() %>%
+  tab_header(
+    title = md("**Energy Expenditure Statistical Summary**"),
+    subtitle = md("Comparative Analysis by Temperature Treatment")
+  ) %>%
+  fmt_number(
+    columns = c("Ambient Energy Expenditure (J/h)", "Low Energy Expenditure (J/h)"),
+    decimals = 2
+  ) %>%
+  fmt_percent(
+    columns = c("Percent Difference"),
+    decimals = 2  # Ensuring percentage values are formatted with two decimals
+  ) %>%
+  cols_label(
+    `Temperature Treatment` = "Temperature Treatment",
+    `Ambient Energy Expenditure (J/h)` = "Ambient Energy Expenditure (J/h)",
+    `Low Energy Expenditure (J/h)` = "Low Energy Expenditure (J/h)",
+    `Percent Difference` = "Percent Difference"
+  ) %>%
+  tab_options(
+    table.font.size = 12,
+    heading.title.font.size = 14,
+    heading.subtitle.font.size = 12,
+    table.font.color = "black"
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center", font = "Times New Roman", color = "black"),
+    locations = cells_body(columns = everything())
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center", font = "Times New Roman", size = 12, color = "black"),
+    locations = cells_column_labels(columns = everything())
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center", font = "Times New Roman", size = 14, color = "black"),
+    locations = cells_title(groups = "title")
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center", font = "Times New Roman", size = 12, color = "black"),
+    locations = cells_title(groups = "subtitle")
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center", font = "Times New Roman", size = 12, color = "black"),
+    locations = cells_stub()
+  )
+
+# Print the resulting data frame
+print(difference_mean_joule_sec)
+
+# Export the table
+write.csv(difference_mean_joule_sec, here::here("Figures", "percent_difference_table.csv"), row.names = FALSE)
+```
+
+
+```{r}
+# Load the package
+library(multiplestressR)
+mesocosm.data <- read_csv(here::here("Data", "Mesocosm_Data", "Completed_Mesocosm_Dataset_Carbonate.csv"))
+
+filtered.uL.dataset <- filtered.respo.dataset %>%    
+  mutate(Volume_mL = 650-Organism_Volume_mL, #Volume of water in chamber = full chamber volume (650 mL) 
+         Volume_L = conv_multiunit(Volume_mL, "mL", "L"), #converting from mL to L (/1000)
+         umolO2.sec = umolO2.L.sec*Volume_L)
+
+temp.means <- mesocosm.data %>%
+  mutate(Temp_Treatment = as.factor(Temp_Treatment)) %>%
+  filter(pH_Treatment != "Sump") %>%
+  group_by(Temp_Treatment) %>%
+  summarize(
+    Mean_Temperature = mean(Temp_C),
+    Standard_Deviation_Temperature = sd(Temp_C),
+    Sample_Size_Temperature = n(),
+  )
+
+pH.means <- mesocosm.data %>%
+  mutate(pH_Treatment = as.factor(pH_Treatment)) %>%
+  filter(pH_Treatment != "Sump") %>%
+  group_by(pH_Treatment) %>%
+  summarize(
+    Mean_pH = mean_pH(pH),
+    Standard_Deviation_pH = sd(pH),
+    Sample_Size_pH = n()
+  )
+
+treatment.means <- mesocosm.data %>%
+  mutate(Temp_Treatment = as.factor(Temp_Treatment),
+         pH_Treatment = as.factor(pH_Treatment)) %>%
+  filter(pH_Treatment != "Sump") %>%
+  group_by(Temp_Treatment, pH_Treatment) %>%
+  summarize(
+    Mean_Temperature_pH = mean(),
+    Standard_Temperature_pH = sd(),
+    Sample_Size_Temperature_pH = n()
+  )
+
+# joule rate summary statistics 
+low.joule.rates.summary <- joule.rates.dataset %>%
+  mutate(pH_Treatment = as.factor(pH_Treatment),
+         Temp_Treatment = as.factor(Temp_Treatment)) %>%
+  group_by(pH_Treatment, Temp_Treatment) %>%
+  summarize(
+    Mean_joule_sec = mean(J.hr),
+    Median_joule_sec = median(J.hr),
+    SD_joule_sec = sd(J.hr),
+    SE_joule_sec = sd(J.hr) / sqrt(n()),
+    N_joule_sec = n()
+  ) %>% filter(pH_Treatment == "Low")
+  
+Ambient.joule.rates.summary <- joule.rates.dataset %>%
+  mutate(pH_Treatment = as.factor(pH_Treatment),
+         Temp_Treatment = as.factor(Temp_Treatment)) %>%
+  group_by(pH_Treatment, Temp_Treatment) %>%
+  summarize(
+    Mean_Control = mean(J.hr),
+    Standard_Deviation_Control = sd(J.hr),
+    Sample_Size_Control= n()) %>%
+    filter(pH_Treatment == "Ambient")
+
+joule.rates.summary <- bind_rows(low.joule.rates.summary, Ambient.joule.rates.summary)
+df <- left_join(joule.rates.summary, mesocosm.data, by = c("Temp_Treatment", "pH_Treatment"))
+
+# Perform mixed-effects model
+#mixed_model <- lme4::lmer(J.hr ~ Temp_Treatment * pH_Treatment + (1|Snail_ID), data = joule.rates.dataset)
+#summary(mixed_model)
+
+df  <- effect_size_additive(Control_N                = df$Sample_Size_Control,           
+                            Control_SD               = df$Standard_Deviation_Control,    
+                            Control_Mean             = df$Mean_Control,                  
+      
+                                                  StressorA_N              = df$Sample_Size_Temperature,         
+                            StressorA_SD             = df$Standard_Deviation_Temperature,  
+                            StressorA_Mean           = df$Mean_Temperature,                
+                            StressorB_N              = df$Sample_Size_pH,         
+                            StressorB_SD             = df$Standard_Deviation_pH,  
+                            StressorB_Mean           = df$Mean_pH,                
+                            StressorsAB_N            = df$Sample_Size_Temperature_pH,       
+                            StressorsAB_SD           = df$Standard_Deviation_Temperature_pH,
+                            StressorsAB_Mean         = df$Mean_Temperature_pH,
+                            Small_Sample_Correction  = TRUE,
+                            Significance_Level       = 0.05)
+head(df)
+
+rstatix::install.packages("rstatix")
+
+rstatix::identify_outliers(mesocosm.data, Temp_C, pH)
+
+# Generate a demo data
+set.seed(123)
+demo.data <- data.frame(
+  sample = 1:20,
+  score = c(rnorm(19, mean = 5, sd = 2), 50),
+  gender = rep(c("Male", "Female"), each = 10)
+)
+
+# Identify outliers according to the variable score
+demo.data %>%
+  identify_outliers(score)
+
+# Identify outliers by groups
+demo.data %>%
+  group_by(gender) %>%
+  identify_outliers("score")
+
+rstatix::shapiro_test(mesocosm.data, Temp_C)
+rstatix::shapiro_test(mesocosm.data, pH)
+
+ggqqplot() [ggpubr package]
+
+Assumption of sphericity: the variance of the differences between within-subjects groups should be equal. This can be checked using the Mauchly’s test of sphericity, which is automatically reported when using the anova_test()
+
+anxiety %>%
+  group_by(time, group) %>%
+  shapiro_test(score)
+gqqplot(anxiety, "score", ggtheme = theme_bw()) +
+  facet_grid(time ~ group)
+
+anxiety %>%
+  group_by(time) %>%
+  levene_test(score ~ group)
+
+```
+
+
