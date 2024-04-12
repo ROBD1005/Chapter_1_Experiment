@@ -178,10 +178,215 @@ square_data <- data.frame(
   ymax = 100
 )
 
+heat_colors <- c(
+    "#ffffcc", 
+    "#ffeda0",
+    "#fed976",  
+    "#ffd480",
+    "#feb24c",  
+    "#ff9a17",
+    "#fd8d3c",  
+    "#fc4e2a",
+    "#fc4e2a",  
+    "#e31a1c", 
+    "red3"
+)
+
 low_preds <- low_preds %>%
   filter(temp <= 24)
 
+high_preds <- high_preds %>%
+  filter(.fitted > 5)
+TPC_schematic <- # Extend the temperature values from 0 to 32
+temperatures <- seq(0, 32, by = 1)
+
+peak_rate_low=150
+metabolic_rate_low <- ifelse(temperatures <= 16, 
+                             (peak_rate_low / 80) * (4 * temperatures - (temperatures^2 / 18)),  
+                             ifelse(temperatures <= 19,  # Starting the decline earlier and ending it sooner at 19°C
+                                    peak_rate_low - 5 * (peak_rate_low / 60) * (temperatures - 16)^2.5,  # Steeper and quicker decline
+                                    24))  # Set to 24 after 19°C
+
+# Convert to tibble for low pH
+metabolic_rate_low <- tibble(temp = temperatures, rate = metabolic_rate_low, curve_id = "low")
+
+peak_rate_high=80
+# High pH curve with adjustments at the ends
+metabolic_rate_ambient <- ifelse(temperatures <= 22, 
+                                 (peak_rate_high / 100) * (5 * temperatures - (temperatures^2 / 22)), 
+                                 ifelse(temperatures <= 27, 
+                                        peak_rate_high - ((temperatures - 22) / (27 - 22)) * (peak_rate_high - 40), 
+                                        10))  # Set to 0 after 27°C
+
+# Convert to tibble for high pH
+metabolic_rate_ambient <- tibble(temp = temperatures, rate = metabolic_rate_ambient, curve_id = "high")
+
+# Combine both data frames
+df_tpc <- bind_rows(metabolic_rate_ambient, metabolic_rate_low)
+
+high_data <- subset(df_tpc, curve_id == "high")
+
+# get start vals
+high_start_vals <- get_start_vals(high_data$temp, high_data$rate, model_name = 'sharpeschoolhigh_1981')
+# get limits
+high_low_lims <- get_lower_lims(high_data$temp, high_data$rate, model_name = 'sharpeschoolhigh_1981')
+high_upper_lims <- get_upper_lims(high_data$temp, high_data$rate, model_name = 'sharpeschoolhigh_1981')
+
+# fit model
+high_fit <- nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                                                     data = high_data,
+                                                     iter = 1,
+                                                     start_lower = high_start_vals,
+                                                     start_upper = high_start_vals,
+                                                     lower = high_low_lims,
+                                                     upper = high_upper_lims,
+                                                     supp_errors = 'Y')
+# predict new data
+high_new_data <- data.frame(temp = seq(min(high_data$temp), max(high_data$temp), 0.5))
+high_preds <- augment(high_fit, newdata = high_new_data)
+
+low_data <- subset(df_tpc, curve_id == "low")
+# get start vals
+low_start_vals <- get_start_vals(low_data$temp, low_data$rate, model_name = 'sharpeschoolhigh_1981')
+# get limits
+low_low_lims <- get_lower_lims(low_data$temp, low_data$rate, model_name = 'sharpeschoolhigh_1981')
+low_upper_lims <- get_upper_lims(low_data$temp, low_data$rate, model_name = 'sharpeschoolhigh_1981')
+
+# fit model
+low_fit <- nls_multstart(rate~sharpeschoolhigh_1981(temp = temp, r_tref,e,eh,th, tref = 15),
+                                                     data = low_data,
+                                                     iter = 1,
+                                                     start_lower = low_start_vals,
+                                                     start_upper = low_start_vals,
+                                                     lower = low_low_lims,
+                                                     upper = low_upper_lims,
+                                                     supp_errors = 'Y')
+
+# predict new data
+low_new_data <- data.frame(temp = seq(min(low_data$temp), max(low_data$temp), 0.5))
+low_preds <- augment(low_fit, newdata = low_new_data)
+
+# calculate topt
+low_topt <- get_topt(low_fit)
+high_topt <- get_topt(high_fit)
+# Calculate the highest point of each curve
+low_rmax <- get_rmax(low_fit)
+high_rmax <- get_rmax(high_fit)
+# calculate ct max and min 
+low_ctmax <- get_ctmax(low_fit)
+high_ctmax <- get_ctmax(high_fit)
+low_ctmin <- get_ctmin(low_fit)
+high_ctmin <- get_ctmin(high_fit)
+# calculate thermal breadth range
+low_tbr <- get_breadth(low_fit)
+high_tbr <- get_breadth(high_fit)
+
+# plotting tbr calculation 
+# Calculate 80% of the peak rate
+rmax_80 <- 0.8 * high_rmax
+# Filter the temperatures at or above 80% of the maximum rate
+temp_at_80pct <- high_preds$temp[high_preds$.fitted >= rmax_80]
+# Determine the minimum and maximum temperatures of this range
+tbr_temp_range <- range(temp_at_80pct)
+middle_point_high <- mean(tbr_temp_range) # for plotting label 
+
+# thermal breadt hfor low ph
+low_rmax_80 <- 0.8 * low_rmax
+temp_at_80pct_low <- low_preds$temp[low_preds$.fitted >= low_rmax_80]
+tbr_temp_range_low <- range(temp_at_80pct_low)
+
+# Create a tibble with a single fake point for temp color bar
+temp_data <- tibble(x = 32, y = 1, diff = 0)
+
+# Define the coordinates for the key square
+square_data <- data.frame(
+  xmin = 26.5,
+  xmax = 28,
+  ymin = 97,
+  ymax = 100
+)
+
+heat_colors <- c(
+    "#ffffcc", 
+    "#ffeda0",
+    "#fed976",  
+    "#ffd480",
+    "#feb24c",  
+    "#ff9a17",
+    "#fd8d3c",  
+    "#fc4e2a",
+    "#fc4e2a",  
+    "#e31a1c", 
+    "red3"
+)
+
+low_preds <- low_preds %>%
+  filter(temp <= 24)
+
+high_preds <- high_preds %>%
+  filter(.fitted > 5)
+
 TPC_schematic <- ggplot() +
+  geom_point(data = temp_data, aes(x = x, y = y, fill = diff), color = "black", size=1, alpha=.01) +
+  #plotting ct max and min for the ambient curve above the low curve 
+  geom_segment(aes(x = high_ctmax-3, y = 5, xend = high_ctmax-3, yend = high_rmax[1]* 0.175), linetype = "dotted", col = 'black') +
+  geom_segment(aes(x = high_ctmax-3, y = high_rmax[1]* 0.35, xend = high_ctmax-3, yend = high_rmax[1]* 0.225), 
+               arrow = arrow(type = "closed", length = unit(0.1, "inches")), color = "black", size = 0.5) + 
+  geom_text(aes(x =  high_ctmax-3, y = high_rmax[1]*0.4), label = TeX("$CT_{max}$"), size=7, color = "black", family = "serif") +  # Label for CTmax 
+  geom_segment(aes(x=1, y=5, xend = 1, yend = high_rmax[1]*0.175), linetype = "dotted", col = 'black') +
+  geom_segment(aes(x = 1, y = high_rmax[1]*0.35, xend = 1, yend = high_rmax[1]*0.225), 
+               arrow = arrow(type = "closed", length = unit(0.1, "inches")), color = "black", size = 0.5) +
+  geom_text(aes(x = 1, y = high_rmax[1]*0.4), label = TeX("$CT_{min}$"), size=7, color = "black", family = "serif") +  # Label for CTmin
+  #plotting the ambient curve 
+  geom_line(data = high_preds, aes(temp, .fitted, color = "high"), size = 1, col = 'black') + # High metabolic rate curve
+  geom_segment(aes(x = high_topt[1], y = 5, xend = high_topt[1], yend = high_rmax[1]), linetype = "dashed", col = 'black', size=0.5)+  # Thermal Opt Line
+  geom_segment(aes(x=0, y=high_rmax[1], xend = high_topt[1], yend = high_rmax[1]), linetype = "dashed", col = 'black', size=0.5) +
+  geom_text(aes(x = 1, y = high_rmax[1]), label = TeX("$R_{max}$"), size=7, vjust = -0.5, color = "black", family = "serif") +
+  geom_text(aes(x = high_topt[1], y = high_rmax[1]), label = TeX("$T_{opt}$"), size=7, vjust = -0.5, color = "black", family = "serif") +  # Label for Thermal Optimum
+  geom_segment(aes(x = tbr_temp_range[1]+0.25, y = high_rmax[1]*0.8, xend = tbr_temp_range[2]-0.15, yend = high_rmax[1]*0.8), 
+               linetype = "dotted", color = "black", size = 0.5, arrow = arrow(type = "closed", length = unit(0.15, "inches"), ends = "both"))+
+  geom_text(aes(x = middle_point_high[1], y = high_rmax[1]* 0.8), label = TeX("$T_{br}$"), size=7, vjust = 1.3, hjust=0.8, color = "black", family = "serif") +
+  geom_segment(aes(x = high_topt-6, xend = high_topt-3, y = high_rmax[1]*0.76, yend = high_rmax[1]*0.95), 
+                 arrow = arrow(length = unit(0.3, "cm")), color = "black") +  # Representing Ea
+  geom_text(aes(x = high_topt-5, y = high_rmax[1] * 0.925), label = TeX("$E_{a}$"), size=7, color = "black", family = "serif") +
+  geom_segment(aes(x = high_topt+3, xend = high_topt+5, y = high_rmax[1]*0.88, yend = high_rmax[1]*0.6), 
+                 arrow = arrow(length = unit(0.3, "cm")), color = "black") +
+  geom_text(aes(x = high_topt+4.5, y = high_rmax[1] * 0.825), label = TeX("$E_{h}$"), size=7, color = "black", family = "serif") +
+geom_segment(aes(y= 5, yend=5, x=0, xend=36), linetype = "dashed", color = "black", linewidth=1) +  # Dotted line at y = 0
+#geom_hline(yintercept = 5, linetype = "dashed", color = "black", linewidth=1) +  # Dotted line at y = 0
+scale_fill_gradientn(colors = heat_colors, limits = c(0, 26), guide = guide_colorbar(title = "Temperature", title.position = "bottom", ticks.colour = NA))+
+theme_minimal() +  # Start with a minimal theme
+  labs(x=NULL, y = "Metabolic Rate") +  # Add y-axis label
+  theme(plot.background = element_blank(),  # Remove background elements
+        panel.background = element_blank(),  # Remove panel background elements
+        axis.line = element_line(arrow = arrow(type = "closed", length = unit(0.2, "inches")), size = 1, color="black"),
+        panel.border = element_blank(),
+        axis.title.x = element_blank(),  # Remove x-axis title
+        axis.title.y = element_text(size = rel(1.5), family="serif"),
+        axis.text = element_blank(),
+        axis.text.x = element_blank(),  # Optional: Remove x-axis text if desired
+        axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        text=element_text(size=12, family="serif"),
+        legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.key = element_blank(),
+        legend.key.width = unit(0.17, "npc"),
+        legend.key.height = unit(5, "mm"),
+        legend.margin = margin(t = 0, r = 0, b = 0, l = 0),
+        legend.box.margin = margin(t = -5, r = 0, b = 0, l = 0),
+        legend.title = element_text(hjust = 0.5, size = rel(1.4), family="serif"),  # Apply serif font to legend title
+        legend.text = element_blank(),  # Apply serif font to legend text
+        plot.margin = margin(0.3, 0.3, 0.3, 0.3, "cm"),
+        plot.title = element_text(family="serif")) + # Apply serif font to the plot title if you have one
+  xlim(0, 36) +
+  ylim(0, 80) 
+
+print(TPC_schematic)
+
+
+
+TPC_schematic_hypothesis <- ggplot() +
   geom_point(data = temp_data, aes(x = x, y = y, fill = diff), color = "black", size=1, alpha=.01) +
   #plotting the low curve first 
   geom_line(data = low_preds, aes(temp, .fitted, color = "low"), size = 1, col = 'cyan3') +     # Low metabolic rate curve
@@ -193,29 +398,29 @@ TPC_schematic <- ggplot() +
   geom_segment(aes(x = high_ctmax-3, y = 5, xend = high_ctmax-3, yend = high_rmax[1]* 0.175), linetype = "dotted", col = 'black') +
   geom_segment(aes(x = high_ctmax-3, y = high_rmax[1]* 0.35, xend = high_ctmax-3, yend = high_rmax[1]* 0.225), 
                arrow = arrow(type = "closed", length = unit(0.1, "inches")), color = "black", size = 0.5) + 
-  geom_text(aes(x =  high_ctmax-3, y = high_rmax[1]*0.4), label = TeX("$CT_{max}$"), size=5, color = "black", family = "serif") +  # Label for CTmax 
+  geom_text(aes(x =  high_ctmax-3, y = high_rmax[1]*0.4), label = TeX("$CT_{max}$"), size=7, color = "black", family = "serif") +  # Label for CTmax 
   geom_segment(aes(x=1, y=5, xend = 1, yend = high_rmax[1]*0.175), linetype = "dotted", col = 'black') +
   geom_segment(aes(x = 1, y = high_rmax[1]*0.35, xend = 1, yend = high_rmax[1]*0.225), 
                arrow = arrow(type = "closed", length = unit(0.1, "inches")), color = "black", size = 0.5) +
-  geom_text(aes(x = 1, y = high_rmax[1]*0.4), label = TeX("$CT_{min}$"), size=5, color = "black", family = "serif") +  # Label for CTmin
+  geom_text(aes(x = 1, y = high_rmax[1]*0.4), label = TeX("$CT_{min}$"), size=7, color = "black", family = "serif") +  # Label for CTmin
   #plotting the ambient curve 
   geom_line(data = high_preds, aes(temp, .fitted, color = "high"), size = 1, col = 'darkorange') + # High metabolic rate curve
   geom_segment(aes(x = high_topt[1], y = 5, xend = high_topt[1], yend = high_rmax[1]), linetype = "dashed", col = 'darkorange1', size=0.5)+  # Thermal Opt Line
   geom_segment(aes(x=0, y=high_rmax[1], xend = high_topt[1], yend = high_rmax[1]), linetype = "dashed", col = 'darkorange1', size=0.5) +
-  geom_text(aes(x = 1, y = high_rmax[1]), label = TeX("$R_{max}$"), size=5, vjust = -0.5, color = "black", family = "serif") +
-  geom_text(aes(x = high_topt[1], y = high_rmax[1]), label = TeX("$T_{opt}$"), size=5, vjust = -0.5, color = "black", family = "serif") +  # Label for Thermal Optimum
+  geom_text(aes(x = 1, y = high_rmax[1]), label = TeX("$R_{max}$"), size=7, vjust = -0.5, color = "black", family = "serif") +
+  geom_text(aes(x = high_topt[1], y = high_rmax[1]), label = TeX("$T_{opt}$"), size=7, vjust = -0.5, color = "black", family = "serif") +  # Label for Thermal Optimum
   geom_segment(aes(x = tbr_temp_range[1]+0.25, y = high_rmax[1]*0.8, xend = tbr_temp_range[2]-0.15, yend = high_rmax[1]*0.8), 
                linetype = "dotted", color = "black", size = 0.5, arrow = arrow(type = "closed", length = unit(0.15, "inches"), ends = "both"))+
-  geom_text(aes(x = middle_point_high[1], y = high_rmax[1]* 0.8), label = TeX("$T_{br}$"), size=5, vjust = 1.3, hjust=0.8, color = "black", family = "serif") +
+  geom_text(aes(x = middle_point_high[1], y = high_rmax[1]* 0.8), label = TeX("$T_{br}$"), size=7, vjust = 1.3, hjust=0.8, color = "black", family = "serif") +
   geom_segment(aes(x = high_topt-6, xend = high_topt-3, y = high_rmax[1]*0.76, yend = high_rmax[1]*0.95), 
                  arrow = arrow(length = unit(0.3, "cm")), color = "black") +  # Representing Ea
-  geom_text(aes(x = high_topt-5, y = high_rmax[1] * 0.925), label = TeX("$E_{a}$"), size=5, color = "black", family = "serif") +
+  geom_text(aes(x = high_topt-5, y = high_rmax[1] * 0.925), label = TeX("$E_{a}$"), size=7, color = "black", family = "serif") +
   geom_segment(aes(x = high_topt+3, xend = high_topt+5, y = high_rmax[1]*0.88, yend = high_rmax[1]*0.6), 
                  arrow = arrow(length = unit(0.3, "cm")), color = "black") +
-  geom_text(aes(x = high_topt+4.5, y = high_rmax[1] * 0.825), label = TeX("$E_{h}$"), size=5, color = "black", family = "serif") +
+  geom_text(aes(x = high_topt+4.5, y = high_rmax[1] * 0.825), label = TeX("$E_{h}$"), size=7, color = "black", family = "serif") +
 geom_segment(aes(y= 5, yend=5, x=0, xend=36), linetype = "dashed", color = "black", linewidth=1) +  # Dotted line at y = 0
 #geom_hline(yintercept = 5, linetype = "dashed", color = "black", linewidth=1) +  # Dotted line at y = 0
-scale_fill_distiller(palette = "YlOrRd", limits = c(0, 26), guide = guide_colorbar(title = bquote("Temperature ("*degree*C*")"), title.position = "bottom", ticks.colour = NA), direction=1) +
+scale_fill_gradientn(colors = heat_colors, limits = c(0, 26), guide = guide_colorbar(title = "Temperature", title.position = "bottom", ticks.colour = NA))+
 scale_color_manual(values = c("darkorange", "cyan3"), 
                      labels = c("Ambient pH", "Decreased pH"), guide = FALSE) +
 theme_minimal() +  # Start with a minimal theme
@@ -236,7 +441,9 @@ theme_minimal() +  # Start with a minimal theme
         legend.key = element_blank(),
         legend.key.width = unit(0.17, "npc"),
         legend.key.height = unit(5, "mm"),
-        legend.title = element_text(hjust = 0.5, size = rel(1.5), family="serif"),  # Apply serif font to legend title
+        legend.margin = margin(t = 0, r = 0, b = 0, l = 0),
+        legend.box.margin = margin(t = -5, r = 0, b = 0, l = 0),
+        legend.title = element_text(hjust = 0.5, size = rel(1.4), family="serif"),  # Apply serif font to legend title
         legend.text = element_blank(),  # Apply serif font to legend text
         plot.margin = margin(0.3, 0.3, 0.3, 0.3, "cm"),
         plot.title = element_text(family="serif")) + # Apply serif font to the plot title if you have one
@@ -245,16 +452,18 @@ theme_minimal() +  # Start with a minimal theme
             fill = "darkorange", color = "darkorange") +
   geom_rect(data = square_data, aes(xmin = xmin, xmax = xmax, ymin = ymin-10.5, ymax = ymax-10.5), 
             fill = "cyan3", color = "cyan3") + 
-  geom_rect(data = square_data, aes(xmin = xmin-1, xmax = xmax+7.5, ymin = ymin-14, ymax = ymax+1),
-            fill = NA, color = "black", size = 0.5) + # This will draw the border around the square
-  annotate("text", x = square_data$xmax+3.1, y = square_data$ymax-3.75, family = "serif", label = "Ambient pH", size=4.5, color = "black") +
-  annotate("text", x = square_data$xmax+3.65, y = square_data$ymax-11.75, family = "serif", label = "Decreased pH", size=4.5, color = "black")
+  #geom_rect(data = square_data, aes(xmin = xmin-1, xmax = xmax+7.5, ymin = ymin-14, ymax = ymax+1),
+          #  fill = NA, color = "black", size = 0.5) + # This will draw the border around the square
+  annotate("text", x = square_data$xmax+3.1, y = square_data$ymax-3.75, family = "serif", label = "Ambient pH", size=5, color = "black") +
+  annotate("text", x = square_data$xmax+3.65, y = square_data$ymax-11.75, family = "serif", label = "Decreased pH", size=5, color = "black")
 
-print(TPC_schematic)
+print(TPC_schematic_hypothesis)
 
-ggsave("TPC_schematic.png", plot = TPC_schematic, width = 8, height = 6, dpi = 1300)
+ggsave(here::here("Figures", "TPC_schematic.png"), plot = TPC_schematic, width = 8, height = 6, dpi = 1300)
+ggsave(here::here("Figures", "TPC_schematic_hypothesis.png"), plot = TPC_schematic_hypothesis, width = 8, height = 6, dpi = 1300)
 
 ```
+
 
 
 
@@ -496,13 +705,13 @@ common_theme <- theme_minimal(base_family="serif") +
     plot.background = element_rect(fill = "white", colour = "white"),  # Set the background to white
     text = element_text(family = "serif", color="black"),
     legend.position = 'none',
-    strip.text = element_text(hjust = 0.5, size = 12, family = "serif"), 
-    strip.text.x = element_text(vjust = 0.5, size = 12, family = "serif"), 
-    strip.text.y = element_text(vjust = 0.5, size = 12, family = "serif"), 
-    axis.title.x = element_text(margin = margin(t = 10), size = 14, hjust = 0.5, family = "serif"),
-    axis.title.y = element_text(margin = margin(r = 10), size = 14, vjust = 0.5, family = "serif"),  # Same size for both axes
-    axis.text = element_text(size = 10, family = "serif"),  # Same size for both axes
-    plot.title = element_text(hjust = 0.5, size = 14, family = "serif"),
+    strip.text = element_text(hjust = 0.5, size = 14, family = "serif"), 
+    strip.text.x = element_text(vjust = 0.5, size = 14, family = "serif"), 
+    strip.text.y = element_text(vjust = 0.5, size = 14, family = "serif"), 
+    axis.title.x = element_text(margin = margin(t = 10), size = 16, hjust = 0.5, family = "serif"),
+    axis.title.y = element_text(margin = margin(r = 10), size = 16, vjust = 0.5, family = "serif"),  # Same size for both axes
+    axis.text = element_text(size = 14, family = "serif"),  # Same size for both axes
+    plot.title = element_text(hjust = 0.5, size = 16, family = "serif"),
     plot.margin = margin(t = 1, r = 1, b = 1, l = 1, unit = "cm")
   )
 ```
@@ -655,8 +864,8 @@ temp_violin_plot <- ggplot(monthly_temp_stats, aes(x = Month, y = Mean_Temp, fil
   theme(plot.title = element_blank(), plot.subtitle = element_blank(), legend.position = "none", axis.text = element_text(size = 12)) +
   scale_y_continuous(breaks = seq(10, 28, by = 2)) +
   xlab("Month") + ylab("Sea Surface Temperature (°C)") +
-  geom_text(stat="count", aes(label=paste0("(N=",..count..,")")), y=.35*max(monthly_temp_stats$Mean_Temp), family = "serif", 
-            color="black", size =3) +
+  #geom_text(stat="count", aes(label=paste0("(N=",..count..,")")), y=.35*max(monthly_temp_stats$Mean_Temp), family = "serif", 
+           # color="black", size =3) +
   expand_limits(y=.35*max(monthly_temp_stats$Mean_Temp))
 
   
