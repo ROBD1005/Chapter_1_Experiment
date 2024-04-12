@@ -777,7 +777,7 @@ ym_temp_stats_summary <- newport_temp_data %>%
 temperature_timeseries <- ggplot(ym_temp_stats_summary, aes(x = as.Date(YM), y = Mean)) +
   geom_line(aes(color = Mean), size = 0.5) +
   geom_smooth(method = "lm", se = FALSE, color = "#CD3333", size=0.5, alpha = .5) +
-  scale_color_gradient(low = "yellow", high = "#CD3333", limits = c(10, 25), breaks = seq(10, 25, by = 5), name = "Temp") +
+  scale_color_gradient(low = "#ffffcc", high = "#CD3333", limits = c(10, 25), breaks = seq(10, 25, by = 5), name = "Temp") +
   scale_x_date(date_breaks = "10 years", date_labels = "%Y") +
   scale_y_continuous(limits = c(10, 25), breaks = seq(10, 25, by = 5)) +
   common_theme +
@@ -824,20 +824,21 @@ theme(plot.title = element_blank(), plot.subtitle = element_blank(), legend.posi
 common_theme
 
 heat_colors <- c(
-    "#ffeda0",  # January - light yellow
-    "#ffffcc",  # February 
-    "#fed976",  # March
-    "#feb24c",  # April
-    "#fd8d3c",  # May
-    "#fc4e2a",  # June
-    "#e31a1c",  # July
-    "red3",  # August - peak at darkest red
-    "#e31a1c",  # September
-    "#fc4e2a",  # October
-    "#ff9a17",  # November
-    "#ffd480"   # December - back to light yellow
+    "#ffcc80",  # Light orange
+    "#ffb366",  # Light medium orange
+    "#ffa64d",  # Medium orange
+    "#ff9933",  # Standard orange
+    "#ff8c1a",  # Bright deep orange
+    "darkorange1",  # Deep orange
+    "darkorange2",  # Dark orange
+    "darkorange3",  # Darkest orange, peak at position 8
+    "darkorange2",  # Dark orange, start tapering down
+    "darkorange1",  # Medium dark orange
+    "#fd8d3c",  # Medium orange
+    "#fdae6b"   # Medium light orange, end
 )
-
+  
+  
 # Calculate the y position for each month's label just once
 label_positions <- monthly_temp_stats %>%
   group_by(Month) %>%
@@ -853,20 +854,26 @@ monthly_temp_stats$Month <- factor(monthly_temp_stats$Month,
 levels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))
 
 
-# Define the plot
-temp_violin_plot <- ggplot(monthly_temp_stats, aes(x = Month, y = Mean_Temp, fill= Month, color = Month)) +
-  geom_hline(yintercept = seq(12, 26, by = 2), color = "darkorange1", size = 0.5) +
+hline_data <- data.frame(yintercept = seq(12, 26, by = 2))
+hline_data$color_value <- hline_data$yintercept  # This will be used for gradient mapping
+
+# Create the plot
+temp_violin_plot <- ggplot(monthly_temp_stats, aes(x = Month, y = Mean_Temp, fill= Month)) +
+  geom_hline(data = hline_data, aes(yintercept = yintercept, color = color_value), size = 0.5) +
   geom_violin(trim = FALSE, scale="width", color="black") +
-  geom_boxplot(width = 0.3, outlier.shape = NA, color="black", fill="white", alpha=0.6) +  # Add boxplot inside violin
-  scale_color_manual(values = heat_colors) +  # Use the custom color vector
+  geom_boxplot(width = 0.3, outlier.shape = NA, color="black", fill="white", alpha=0.6) +
   scale_fill_manual(values = heat_colors) +
-  common_theme+
-  theme(plot.title = element_blank(), plot.subtitle = element_blank(), legend.position = "none", axis.text = element_text(size = 12)) +
+  scale_color_gradient(low = "#ffffcc", high = "red3") +
+  common_theme +
   scale_y_continuous(breaks = seq(10, 28, by = 2)) +
-  xlab("Month") + ylab("Sea Surface Temperature (°C)") +
   #geom_text(stat="count", aes(label=paste0("(N=",..count..,")")), y=.35*max(monthly_temp_stats$Mean_Temp), family = "serif", 
            # color="black", size =3) +
+  xlab("Month") + ylab("Sea Surface Temperature (°C)") +
+  ylim(10, 28) +
   expand_limits(y=.35*max(monthly_temp_stats$Mean_Temp))
+
+temp_violin_plot
+
 
   
 # Display the plots
