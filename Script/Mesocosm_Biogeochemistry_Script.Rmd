@@ -463,8 +463,53 @@ mesocosm_data <- mesocosm_data %>%
 
 combined_mesocosm_data <- left_join(mesocosm_data, combined_data,
        by = c("Date" = "Date", "Tank_ID" = "Tank_ID", 
-       "Temp_Treatment" = "Temp_Treatment", "pH_Treatment" = "pH_Treatment")) 
+       "Temp_Treatment" = "Temp_Treatment", "pH_Treatment" = "pH_Treatment"))
+```
 
+
+```{r}
+
+
+# Calculate the temperature difference between high and low tide
+temp_difference <- cleaned_timeseries %>%
+  filter(Tide %in% c("High", "Low"),   # Only include high and low tide data
+         !is.na(Avg_Temp_C),            # Exclude NA values
+         pH_Treatment != "Sump") %>%   # Exclude "Sump" pH treatment
+  group_by(Temp_Treatment, pH_Treatment, Tide) %>% 
+  summarize(Mean_Temp = mean(Avg_Temp_C, na.rm = TRUE)) %>%   # Calculate the mean temperature
+  pivot_wider(names_from = Tide, values_from = Mean_Temp) %>%  # Reshape data to wide format
+  mutate(Temp_Diff = High - Low)   # Calculate the temperature difference between high and low tide
+
+
+# Calculate the average of temperature differences for each combination
+temp_difference_avg <- temp_difference %>%
+  ungroup() %>% 
+  summarize(Average_Temp_Diff = mean(Temp_Diff),
+            SD_Temp_Diff = sd(Temp_Diff),
+            SE_Temp_Diff = sd(Temp_Diff) / sqrt(n()))
+
+# Print the average
+print(temp_difference_avg)
+
+# Print the results
+print(temp_difference)
+
+temp_difference %>% 
+  pull(Temp_Diff) %>%
+  min()
+
+temp_difference %>% 
+  pull(Temp_Diff) %>%
+  max()
+
+
+min(temp_difference$Temp_Diff)
+max(temp_difference$Temp_Diff)
+min(temp_difference$High)
+```
+
+
+```{r Proccessing HOBO Logger Data}
 logger_mesocosm_data <- combined_mesocosm_data %>% 
   group_by(Date, Tank_ID, Temp_Treatment, pH_Treatment) %>%
   summarise(Logger_Temp_C = mean(Mean_Hightide_Temp_C, na.rm = TRUE), pH) %>%
@@ -503,6 +548,35 @@ check_model(mesocosm_pH_lm_model)
 mesocoswm_pH_lm_results <- summary(mesocosm_pH_lm_model)
 print(mesocoswm_pH_lm_results)
 
+# Create an empty data frame to store results
+temp_difference_df <- data.frame(Temp_Treatment = character(), 
+                                 pH_Treatment = character(), 
+                                 Mean_Temp_Difference = numeric())
+
+# Loop through each temperature treatment and pH treatment combination
+for (temp_treatment in unique(logger_mesocosm_data$Temp_Treatment)) {
+  for (pH_treatment in unique(logger_mesocosm_data$pH_Treatment)) {
+    # Subset data for the current combination
+    subset_data <- logger_mesocosm_data[logger_mesocosm_data$Temp_Treatment == temp_treatment & 
+                                        logger_mesocosm_data$pH_Treatment == pH_treatment, ]
+    
+    # Calculate mean air temperature and mean water temperature for the current combination
+    mean_air_temp <- mean(subset_data$Mean_Air_Temp_C)
+    mean_water_temp <- mean(subset_data$Logger_Temp_C)
+    
+    # Calculate the mean difference between air and water temperatures
+    mean_temp_difference <- mean_air_temp - mean_water_temp
+    
+    # Append results to the data frame
+    temp_difference_df <- rbind(temp_difference_df, 
+                                data.frame(Temp_Treatment = temp_treatment, 
+                                           pH_Treatment = pH_treatment, 
+                                           Mean_Temp_Difference = mean_temp_difference))
+  }
+}
+
+# Print the results
+print(temp_difference_df)
 ```
 
 ## Mesocosm Temperature and pH Statistical Analysis 
