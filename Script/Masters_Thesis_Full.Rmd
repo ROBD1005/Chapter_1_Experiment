@@ -7,15 +7,13 @@ output: html_document
 
 # Load Libraries
 
-```{r setup, include=FALSE}
+```{r setup, include=FALSE, message=FALSE}
 
-
-# Setting up the R environment, loading essential packages, and defining custom functions
-if (!require("pacman")) install.packages("pacman")
-library(pacman)
-
-# Set knitr options
+# Setting up the R environment & loading essential packages
 knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+
+if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+library(pacman)
 
 # Function to check and install required packages
 install_if_missing <- function(package_name) {
@@ -81,16 +79,18 @@ for (pkg in names(specific_packages)) {
 }
 
 
-# Function to load, install, and verify packages
 load_and_verify_packages <- function(packages) {
-  # Load and install the packages using pacman
-  pacman::p_load(char = packages, character.only = TRUE, install = TRUE, update = TRUE)
-  
-  # Verify that the packages are loaded
-  loaded_packages <- sapply(packages, require, character.only = TRUE)
-  
-  # Display the loading status of each package
-  print(loaded_packages)
+  # Load and install the packages using pacman with more detailed error handling
+  results <- sapply(packages, function(pkg) {
+    tryCatch({
+      pacman::p_load(char = pkg, character.only = TRUE, install = TRUE, update = TRUE)
+      TRUE
+    }, error = function(e) {
+      cat("Failed to load package:", pkg, "- Error:", e$message, "\n")
+      FALSE
+    })
+  })
+  print(results)
 }
 
 # General packages
@@ -176,7 +176,7 @@ common_theme <- theme_minimal(base_family="serif") +
     # Adjust plot margins
     plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 0.5, unit="cm"),
     # Increase line thickness
-    panel.border = element_rect(color = NA, fill = NA, size = 0.5),
+    panel.border = element_rect(color = NA, fill = NA, linewidth = 0.5),
     # Set panel grid lines
     panel.grid.major = element_line(color = "gray75", linewidth = 0.15),
     panel.grid.minor = element_blank()
